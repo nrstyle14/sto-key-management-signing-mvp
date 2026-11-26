@@ -1,6 +1,7 @@
-# 로컬 환경: Besu QBFT 검증 노드 4개, MySQL 8 (서명 서버는 이후 작업에서 추가)
+# 로컬 환경: Besu QBFT 검증 노드 4개, MySQL 8, 서명 서버(signerd), 업무 서버(apid)
+# 기동 순서는 make up 이 정한다: 인프라 → 마이그레이션 → 토큰 초기화·부트스트랩 → signerd, apid
 # 노드 키와 genesis 는 scripts/gen-besu-network.sh 가 deploy/besu/generated/ 에,
-# 비밀 파일은 scripts/gen-secrets.sh 가 deploy/secrets/ 에 만든다(둘 다 커밋 금지).
+# 비밀 파일은 scripts/gen-secrets.sh 가 deploy/secrets/ 에, 인증서는 scripts/gen-certs.sh 가 deploy/certs/ 에 만든다(모두 커밋 금지).
 name: sto-kms
 
 x-besu: &besu
@@ -88,6 +89,85 @@ services:
       timeout: 5s
       retries: 60
 
+  # 서명 서버. 토큰 저장소 볼륨은 이 서비스(와 같은 볼륨을 순서대로 쓰는 signerd-setup)만 마운트한다(D-4).
+  # 원장(besu) 네트워크에 붙지 않는다.
+  signerd:
+    image: sto-kms/signerd:${SIGNERD_IMAGE_TAG:-dev}
+    build:
+      context: ..
+      dockerfile: deploy/signerd/Dockerfile
+      target: runtime
+      args:
+        GO_BUILD_TAGS: ${SIGNERD_GO_BUILD_TAGS:-}
+    command: ["serve", "--config", "/etc/sto/signerd.yaml"]
+    restart: unless-stopped
+    secrets: &signerd-secrets
+      - signer_app_password
+      - hsm_pin_platform
+      - hsm_pin_inst-a
+      - hsm_pin_inst-b
+      - hsm_pin_audit
+    volumes: &signerd-volumes
+      - ./signerd/signerd.yaml:/etc/sto/signerd.yaml:ro
+      - ./certs/ca.crt:/etc/sto/certs/ca.crt:ro
+      - ./certs/signerd.crt:/etc/sto/certs/signerd.crt:ro
+      - ./certs/signerd.key:/etc/sto/certs/signerd.key:ro
+      - signerd-tokens:/var/lib/softhsm/tokens
+    networks: [db, signer]
+    # 개발용으로 호스트 루프백에만 바인딩한다(통합 시험, stoctl 비상 동결).
+    ports:
+      - "127.0.0.1:8443:8443"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/signerd", "healthcheck", "--config", "/etc/sto/signerd.yaml"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  # 토큰 초기화와 부트스트랩을 한 번씩 실행하는 일회성 서비스. SO PIN 은 여기에만 준다.
+  # signerd 가 멈춘 상태에서만 실행한다(scripts/init-signer.sh). 같은 토큰 볼륨을 동시에 쓰지 않는다.
+  signerd-setup:
+    image: sto-kms/signerd:${SIGNERD_IMAGE_TAG:-dev}
+    profiles: [setup]
+    secrets:
+      - signer_app_password
+      - hsm_pin_platform
+      - hsm_pin_inst-a
+      - hsm_pin_inst-b
+      - hsm_pin_audit
+      - hsm_so_pin_platform
+      - hsm_so_pin_inst-a
+      - hsm_so_pin_inst-b
+      - hsm_so_pin_audit
+    volumes:
+      - ./signerd/signerd.yaml:/etc/sto/signerd.yaml:ro
+      - ./signerd/bootstrap.yaml:/etc/sto/bootstrap.yaml:ro
+      - signerd-tokens:/var/lib/softhsm/tokens
+    networks: [db]
+
+  # 업무 서버. HSM 을 갖지 않는다.
+  apid:
+    image: sto-kms/apid:dev
+    build:
+      context: ..
+      dockerfile: deploy/apid/Dockerfile
+    command: ["serve", "--config", "/etc/sto/apid.yaml"]
+    restart: unless-stopped
+    secrets:
+      - api_app_password
+    volumes:
+      - ./apid/apid.yaml:/etc/sto/apid.yaml:ro
+      - ./certs/ca.crt:/etc/sto/certs/ca.crt:ro
+      - ./certs/apid.crt:/etc/sto/certs/apid.crt:ro
+      - ./certs/apid.key:/etc/sto/certs/apid.key:ro
+    networks: [db, signer, besu]
+    ports:
+      - "127.0.0.1:9443:9443"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/apid", "healthcheck", "--config", "/etc/sto/apid.yaml"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
 secrets:
   mysql_root_password:
     file: ./secrets/mysql_root_password
@@ -99,9 +179,26 @@ secrets:
     file: ./secrets/api_app_password
   signer_app_password:
     file: ./secrets/signer_app_password
+  hsm_pin_platform:
+    file: ./secrets/hsm_pin_platform
+  hsm_so_pin_platform:
+    file: ./secrets/hsm_so_pin_platform
+  hsm_pin_inst-a:
+    file: ./secrets/hsm_pin_inst-a
+  hsm_so_pin_inst-a:
+    file: ./secrets/hsm_so_pin_inst-a
+  hsm_pin_inst-b:
+    file: ./secrets/hsm_pin_inst-b
+  hsm_so_pin_inst-b:
+    file: ./secrets/hsm_so_pin_inst-b
+  hsm_pin_audit:
+    file: ./secrets/hsm_pin_audit
+  hsm_so_pin_audit:
+    file: ./secrets/hsm_so_pin_audit
 
 networks:
   db: {}
+  signer: {}
   besu:
     ipam:
       config:
@@ -109,6 +206,7 @@ networks:
 
 volumes:
   mysql-data:
+  signerd-tokens:
   besu-node1-data:
   besu-node2-data:
   besu-node3-data:

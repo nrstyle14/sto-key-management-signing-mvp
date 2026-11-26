@@ -27,14 +27,16 @@
 | `make build` | 세 실행 파일 빌드(`bin/`) |
 | `make test` | 단위 테스트 |
 | `make test-contracts` | 컨트랙트 테스트(T3.1에서 구현) |
-| `make lint` | gofmt, `go vet`, import 경계 검사(`scripts/check-imports.sh`) |
-| `make up` / `make down` | 로컬 환경(Besu 4노드, MySQL) 기동·종료. `up`은 노드 키·genesis·비밀 파일이 없으면 먼저 만든다 |
+| `make lint` | gofmt, `go vet`(통합·`signtx_m1` 태그 포함), import 경계 검사(`scripts/check-imports.sh`) |
+| `make up` / `make down` | 로컬 환경 기동·종료. `up`: 생성물(노드 키·비밀·인증서) → Besu·MySQL → 마이그레이션 → HSM 토큰 초기화·부트스트랩(`scripts/init-signer.sh`) → signerd·apid |
 | `make migrate` | DB 마이그레이션과 서버용 계정 테이블 단위 권한 부여 |
-| `make it` | 통합 테스트(`-tags integration`, `make up && make migrate` 이후) |
+| `make it` | 통합 테스트(`make up` 이후): 호스트 DB·서버 시험 → SoftHSM2 컨테이너 시험(`scripts/it-hsm.sh`) → 서명 서버 종단 시험(`scripts/it-signtx.sh`) |
 | `make demo` | 전체 시연(T4.4에서 구현) |
 | `scripts/check-besu.sh [--fault-test]` | Besu 블록 생성·검증 노드·가스비 0 tx·노드 장애 점검 |
 | `scripts/probe-hsm.sh sign\|wrap` | SoftHSM2 서명·래핑 실측(서명 서버 이미지 안에서 실행) |
 
-생성물과 비밀(커밋 금지): `deploy/besu/generated/`(노드 키), `deploy/secrets/`(DB 비밀번호), `scripts/probe-hsm/out/`.
+생성물과 비밀(커밋 금지): `deploy/besu/generated/`(노드 키), `deploy/secrets/`(DB 비밀번호, HSM PIN), `deploy/certs/`(CA·서버 인증서와 키), `scripts/probe-hsm/out/`.
+
+빌드 태그: `integration`(통합 테스트), `signtx_m1`(M1 서명 API, 시험용 빌드에서만. T2.4에서 제거).
 
 명령이 아직 없으면 T0.1에서 만든다. 명령을 추가하거나 바꾸면 이 표를 고쳐.

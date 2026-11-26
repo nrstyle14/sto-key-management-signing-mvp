@@ -22,7 +22,9 @@ test: ## 단위 테스트
 lint: ## 정적 검사와 import 경계 검사
 	@out="$$(gofmt -l cmd internal scripts test)"; if [ -n "$$out" ]; then echo "gofmt 필요:"; echo "$$out"; exit 1; fi
 	$(GO) vet ./...
-	$(GO) vet -tags integration ./test/...
+	$(GO) vet -tags integration ./...
+	$(GO) vet -tags signtx_m1 ./cmd/signerd
+	$(GO) vet -tags "integration signtx_m1" ./test/...
 	./scripts/check-imports.sh
 
 test-contracts: ## 컨트랙트 테스트
@@ -30,10 +32,16 @@ test-contracts: ## 컨트랙트 테스트
 
 COMPOSE := docker compose -f deploy/docker-compose.yml
 
-up: ## 로컬 환경 기동(생성물·비밀 파일이 없으면 먼저 만든다)
+INFRA := mysql besu-node1 besu-node2 besu-node3 besu-node4
+
+up: ## 로컬 환경 기동: 생성물·비밀 → 인프라 → 마이그레이션 → 토큰·부트스트랩 → signerd, apid
 	./scripts/gen-besu-network.sh
 	./scripts/gen-secrets.sh
-	$(COMPOSE) up -d --wait
+	./scripts/gen-certs.sh
+	$(COMPOSE) up -d --wait $(INFRA)
+	$(MAKE) --no-print-directory migrate
+	./scripts/init-signer.sh
+	$(COMPOSE) up -d --wait --build signerd apid
 
 down: ## 로컬 환경 종료(데이터 볼륨은 남긴다)
 	$(COMPOSE) down
@@ -41,8 +49,10 @@ down: ## 로컬 환경 종료(데이터 볼륨은 남긴다)
 migrate: ## DB 마이그레이션과 서버용 계정 권한 부여
 	$(GO) run ./scripts/dbmigrate
 
-it: ## 통합 테스트(make up && make migrate 이후)
-	$(GO) test -count=1 -tags integration ./test/...
+it: ## 통합 테스트(make up 이후): 호스트 DB·서버 시험 → SoftHSM2 컨테이너 시험 → 서명 서버 종단 시험
+	$(GO) test -count=1 -tags integration ./test/... ./internal/keyreg/... ./internal/signsvc/...
+	./scripts/it-hsm.sh
+	./scripts/it-signtx.sh
 
 demo: ## 전체 시연
 	@echo "demo: 아직 구현되지 않았다(T4.4에서 추가)"

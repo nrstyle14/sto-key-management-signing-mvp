@@ -1,0 +1,28 @@
+# signerd init --bootstrap 입력(설계서 2절 시연용 주체). 한 번만 적용된다.
+# 승인자(T2.2)와 정책(T2.3)은 M2 에서 채운다. 그때는 환경을 지우고(make down + 볼륨 삭제) 다시 부트스트랩한다.
+tokens:
+  - label: besu-local.platform
+  - label: besu-local.inst-a
+  - label: besu-local.inst-b
+  - label: audit
+keys:
+  - key_id: key-platform-contract-admin-1
+    token: besu-local.platform
+    purpose: CONTRACT_ADMIN
+  - key_id: key-platform-emergency-1
+    token: besu-local.platform
+    purpose: EMERGENCY
+  - key_id: key-inst-a-issue-1
+    token: besu-local.inst-a
+    purpose: ISSUE
+  - key_id: key-inst-a-transfer-1
+    token: besu-local.inst-a
+    purpose: TRANSFER
+  - key_id: key-inst-b-transfer-1
+    token: besu-local.inst-b
+    purpose: TRANSFER
+  - key_id: key-audit-1
+    token: audit
+    purpose: AUDIT
+approvers: []
+policies: []

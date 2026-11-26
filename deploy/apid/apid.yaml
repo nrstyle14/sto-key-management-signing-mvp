@@ -1,0 +1,19 @@
+# apid 설정(설계서 15절). 비밀번호는 Docker secret 파일 경로로만 가리킨다.
+listen: ":9443"
+tls:
+  ca: /etc/sto/certs/ca.crt
+  cert: /etc/sto/certs/apid.crt
+  key: /etc/sto/certs/apid.key
+allowed_callers: [stoctl, apid]
+db:
+  addr: mysql:3306
+  user: api_app
+  password_file: /run/secrets/api_app_password
+  database: api
+ledger:
+  id: besu-local
+  rpc_url: http://besu-node1:8545
+  chain_id: 20261124
+signer:
+  url: https://signerd:8443
+  server_name: signerd

@@ -1,0 +1,44 @@
+# signerd 설정(설계서 15절). PIN·비밀번호는 Docker secret 파일 경로로만 가리킨다.
+listen: ":8443"
+tls:
+  ca: /etc/sto/certs/ca.crt
+  cert: /etc/sto/certs/signerd.crt
+  key: /etc/sto/certs/signerd.key
+# 핸드셰이크에서 허용할 클라이언트 인증서 CN. 경로별로 더 좁힌다(/v1/sign/tx 는 apid 만).
+allowed_callers: [apid, stoctl, signerd]
+db:
+  addr: mysql:3306
+  user: signer_app
+  password_file: /run/secrets/signer_app_password
+  database: signer
+hsm:
+  library: /usr/lib/softhsm/libsofthsm2.so
+  sessions_per_token: 4
+  # 토큰은 (원장, 기관) 단위다(설계서 2절, 6.1). so_pin_file 은 init-tokens 에만 쓴다.
+  tokens:
+    - label: besu-local.platform
+      ledger_id: besu-local
+      institution_id: platform
+      pin_file: /run/secrets/hsm_pin_platform
+      so_pin_file: /run/secrets/hsm_so_pin_platform
+    - label: besu-local.inst-a
+      ledger_id: besu-local
+      institution_id: inst-a
+      pin_file: /run/secrets/hsm_pin_inst-a
+      so_pin_file: /run/secrets/hsm_so_pin_inst-a
+    - label: besu-local.inst-b
+      ledger_id: besu-local
+      institution_id: inst-b
+      pin_file: /run/secrets/hsm_pin_inst-b
+      so_pin_file: /run/secrets/hsm_so_pin_inst-b
+    - label: audit
+      ledger_id: global
+      institution_id: audit
+      pin_file: /run/secrets/hsm_pin_audit
+      so_pin_file: /run/secrets/hsm_so_pin_audit
+# 서명 서버는 원장 노드에 접속하지 않고 이 값으로 chainId 를 대조한다.
+ledgers:
+  - id: besu-local
+    chain_id: 20261124
+signing:
+  max_gas_limit: 500000

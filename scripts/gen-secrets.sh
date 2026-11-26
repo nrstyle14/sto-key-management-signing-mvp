@@ -11,6 +11,14 @@ NAMES=(
   signer_migrator_password
   api_app_password
   signer_app_password
+  hsm_pin_platform
+  hsm_so_pin_platform
+  hsm_pin_inst-a
+  hsm_so_pin_inst-a
+  hsm_pin_inst-b
+  hsm_so_pin_inst-b
+  hsm_pin_audit
+  hsm_so_pin_audit
 )
 
 mkdir -p "$DIR"
@@ -24,6 +32,7 @@ for n in "${NAMES[@]}"; do
     echo "생성: deploy/secrets/$n"
   fi
 done
-# MySQL 컨테이너의 초기화 스크립트(uid 999)가 읽을 수 있어야 하므로 파일은 644로 둔다.
-# 디렉터리(700)가 호스트의 다른 사용자 접근을 막는다.
-chmod 644 "$DIR"/*
+# 비밀 파일은 소유자 전용(0600), 디렉터리는 0700 이다. Docker Desktop 은 바인드 마운트 파일을
+# 컨테이너 사용자 소유로 보여 주므로 비 root 컨테이너(MySQL, signerd, apid)도 읽는다.
+# Linux Docker Engine 에서는 파일 소유자를 각 컨테이너 uid 로 바꿔야 한다.
+chmod 600 "$DIR"/*
