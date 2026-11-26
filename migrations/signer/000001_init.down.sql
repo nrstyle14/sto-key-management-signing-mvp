@@ -1,0 +1,11 @@
+DROP TABLE IF EXISTS audit_checkpoints;
+DROP TABLE IF EXISTS audit_log;
+DROP TABLE IF EXISTS freezes;
+DROP TABLE IF EXISTS key_ops;
+DROP TABLE IF EXISTS signatures;
+DROP TABLE IF EXISTS whitelists;
+DROP TABLE IF EXISTS policies;
+DROP TABLE IF EXISTS approver_groups;
+DROP TABLE IF EXISTS approvers;
+DROP TABLE IF EXISTS `keys`;
+DROP TABLE IF EXISTS hsm_tokens;

@@ -1,0 +1,12 @@
+DROP TABLE IF EXISTS audit_log;
+DROP TABLE IF EXISTS alarms;
+DROP TABLE IF EXISTS recon_diffs;
+DROP TABLE IF EXISTS recon_runs;
+DROP TABLE IF EXISTS holdings;
+DROP TABLE IF EXISTS accounts;
+DROP TABLE IF EXISTS registry_events;
+DROP TABLE IF EXISTS ledger_cursor;
+DROP TABLE IF EXISTS securities;
+DROP TABLE IF EXISTS nonces;
+DROP TABLE IF EXISTS approvals;
+DROP TABLE IF EXISTS requests;

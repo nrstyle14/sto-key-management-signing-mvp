@@ -1,0 +1,11 @@
+# 비밀·생성물은 이미지 빌드 컨텍스트에 넣지 않는다.
+.git
+.remember
+bin
+deploy/besu/generated
+deploy/certs
+deploy/secrets
+scripts/probe-hsm/out
+contracts/out
+contracts/cache
+docs

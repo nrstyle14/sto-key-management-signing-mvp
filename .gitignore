@@ -1,0 +1,35 @@
+# 빌드 산출물
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+
+# 비밀과 생성물: 커밋 금지 (작업지시서 보안 규칙)
+/deploy/certs/
+/deploy/secrets/
+/deploy/besu/generated/
+**/softhsm-tokens/
+*.pin
+*.key
+*.pem
+*.p12
+*.share
+approver-keys/
+*.approver.json
+.env
+.env.*
+
+# 컨트랙트 빌드 산출물
+/contracts/out/
+/contracts/cache/
+/contracts/broadcast/
+
+# 실측 결과 원시 출력
+/scripts/probe-hsm/out/
+
+# 도구·편집기
+.remember/
+.idea/
+.vscode/
+.DS_Store
