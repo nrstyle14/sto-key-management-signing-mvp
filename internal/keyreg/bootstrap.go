@@ -9,6 +9,10 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/ethereum/go-ethereum/common"
+
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/audit"
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/policy"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/signer"
 )
 
@@ -43,13 +47,14 @@ type BootstrapApprover struct {
 	Groups        []string `yaml:"groups"`
 }
 
-// BootstrapPolicy 는 초기 정책이다. body 는 JSON 으로 저장한다.
+// BootstrapPolicy 는 초기 정책이다(설계서 7.2). body 는 엄격한 형식(policy.Body)이고 whitelist 는 수신 계좌 주소다.
 type BootstrapPolicy struct {
 	PolicyID      string         `yaml:"policy_id"`
 	LedgerID      string         `yaml:"ledger_id"`
 	InstitutionID string         `yaml:"institution_id"`
 	KeyPurpose    signer.Purpose `yaml:"key_purpose"`
-	Body          map[string]any `yaml:"body"`
+	Body          *policy.Body   `yaml:"body"`
+	Whitelist     []string       `yaml:"whitelist"`
 }
 
 // TokenScope 는 signerd 설정에 있는 토큰의 원장·기관이다.
@@ -110,6 +115,7 @@ func (f *BootstrapFile) Validate(scopes map[string]TokenScope) error {
 		}
 	}
 	pids := map[string]bool{}
+	scopesSeen := map[string]bool{}
 	for _, p := range f.Policies {
 		if p.PolicyID == "" || pids[p.PolicyID] || p.LedgerID == "" || p.InstitutionID == "" || p.Body == nil {
 			errs = append(errs, fmt.Errorf("정책 %q: policy_id(중복 불가), ledger_id, institution_id, body 가 필요하다", p.PolicyID))
@@ -118,6 +124,21 @@ func (f *BootstrapFile) Validate(scopes map[string]TokenScope) error {
 		if _, err := signer.ClassOf(p.KeyPurpose); err != nil {
 			errs = append(errs, fmt.Errorf("정책 %s: %w", p.PolicyID, err))
 		}
+		if p.Body != nil {
+			if err := p.Body.Validate(); err != nil {
+				errs = append(errs, fmt.Errorf("정책 %s 본문: %w", p.PolicyID, err))
+			}
+		}
+		for _, w := range p.Whitelist {
+			if !common.IsHexAddress(w) || common.HexToAddress(w).Hex() != w {
+				errs = append(errs, fmt.Errorf("정책 %s 화이트리스트 %q 는 EIP-55 주소여야 한다", p.PolicyID, w))
+			}
+		}
+		scope := p.LedgerID + "/" + p.InstitutionID + "/" + string(p.KeyPurpose)
+		if scopesSeen[scope] {
+			errs = append(errs, fmt.Errorf("정책 범위 %s 에 정책이 둘 이상이다", scope))
+		}
+		scopesSeen[scope] = true
 	}
 	return errors.Join(errs...)
 }
@@ -189,10 +210,39 @@ func ApplyBootstrap(ctx context.Context, db *sql.DB, km KeyMaker, f *BootstrapFi
 	if err = insertBootstrap(ctx, tx, f, created, scopes); err != nil {
 		return res, err
 	}
+	// 초기 등록도 감사로그에 남긴다(설계서 7.2). 같은 트랜잭션이다.
+	if _, err = audit.Append(ctx, tx, bootstrapAudit(f)); err != nil {
+		return res, err
+	}
 	if err = tx.Commit(); err != nil {
 		return res, fmt.Errorf("부트스트랩 커밋: %w", err)
 	}
 	return BootstrapResult{Tokens: len(f.Tokens), Keys: len(created), Approvers: len(f.Approvers), Policies: len(f.Policies)}, nil
+}
+
+func bootstrapAudit(f *BootstrapFile) audit.Entry {
+	var toks, keys, apprs, pols []string
+	for _, t := range f.Tokens {
+		toks = append(toks, t.Label)
+	}
+	for _, k := range f.Keys {
+		keys = append(keys, k.KeyID+":"+k.Token+":"+string(k.Purpose))
+	}
+	for _, a := range f.Approvers {
+		apprs = append(apprs, a.ApproverID)
+	}
+	for _, p := range f.Policies {
+		pols = append(pols, p.PolicyID)
+	}
+	return audit.Entry{Actor: "signerd-init", Action: "BOOTSTRAP", Subject: "registry", Payload: map[string]any{
+		"tokens": nonNil(toks), "keys": nonNil(keys), "approvers": nonNil(apprs), "policies": nonNil(pols)}}
+}
+
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 // GeneratedKey 는 HSM 에 만든 부트스트랩 키다.
@@ -229,13 +279,18 @@ func insertBootstrap(ctx context.Context, tx *sql.Tx, f *BootstrapFile, keys []G
 		}
 	}
 	for _, p := range f.Policies {
-		body, err := compactJSON(p.Body)
+		body, err := p.Body.Canonical()
 		if err != nil {
 			return fmt.Errorf("정책 %s 본문: %w", p.PolicyID, err)
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO policies (policy_id, version, ledger_id, institution_id, key_purpose, body_json, status) VALUES (?, 1, ?, ?, ?, ?, 'ACTIVE')`,
 			p.PolicyID, p.LedgerID, p.InstitutionID, string(p.KeyPurpose), string(body)); err != nil {
 			return fmt.Errorf("정책 등록(%s): %w", p.PolicyID, err)
+		}
+		for _, w := range p.Whitelist {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO whitelists (policy_id, account_address) VALUES (?, ?)`, p.PolicyID, w); err != nil {
+				return fmt.Errorf("화이트리스트 등록(%s/%s): %w", p.PolicyID, w, err)
+			}
 		}
 	}
 	return nil

@@ -3,12 +3,21 @@
 package test
 
 import (
+	"crypto/ed25519"
 	"crypto/tls"
+	"database/sql"
+	"encoding/hex"
+	"math/big"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
+
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/approval"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/transport"
 )
 
@@ -43,4 +52,64 @@ func noCertClient(t *testing.T, serverName string) *http.Client {
 	}
 	cfg.Certificates = nil
 	return transport.NewClient(&tls.Config{MinVersion: cfg.MinVersion, RootCAs: cfg.RootCAs, ServerName: serverName}, 10*time.Second)
+}
+
+// approverSign 은 deploy/approvers/<id>.json 키(암호는 deploy/secrets/approver_<id>_password)로 승인 서명을 만든다.
+func approverSign(t *testing.T, id string, intentHash [32]byte, d approval.Decision) approval.Approval {
+	t.Helper()
+	kf, err := approval.ReadKeyFile(filepath.Join(repoRoot(t), "deploy", "approvers", id+".json"))
+	if err != nil {
+		t.Fatalf("승인자 키 파일(make up 필요): %v", err)
+	}
+	pw, err := os.ReadFile(filepath.Join(repoRoot(t), "deploy", "secrets", "approver_"+id+"_password"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	priv, err := kf.Decrypt([]byte(strings.TrimSpace(string(pw))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(priv)
+	sig, err := approval.Sign(priv, intentHash, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return approval.Approval{ApproverID: id, Decision: d, Signature: hex.EncodeToString(sig)}
+}
+
+// signerDB 는 signer 스키마에 signer_app 으로 접속한다(조회용).
+func signerDB(t *testing.T) *sql.DB {
+	t.Helper()
+	pw, err := os.ReadFile(filepath.Join(repoRoot(t), "deploy", "secrets", "signer_app_password"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := mysql.NewConfig()
+	cfg.User, cfg.Passwd, cfg.Net, cfg.Addr, cfg.DBName = "signer_app", strings.TrimSpace(string(pw)), "tcp", "127.0.0.1:3306", "signer"
+	db, err := sql.Open("mysql", cfg.FormatDSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+func bigInt(v int64) *big.Int { return big.NewInt(v) }
+
+// approverKey 는 승인자 키 파일을 풀어 개인키를 돌려준다(호출자가 clear).
+func approverKey(t *testing.T, id string) ed25519.PrivateKey {
+	t.Helper()
+	kf, err := approval.ReadKeyFile(filepath.Join(repoRoot(t), "deploy", "approvers", id+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pw, err := os.ReadFile(filepath.Join(repoRoot(t), "deploy", "secrets", "approver_"+id+"_password"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	priv, err := kf.Decrypt([]byte(strings.TrimSpace(string(pw))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return priv
 }

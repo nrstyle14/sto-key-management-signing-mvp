@@ -1,7 +1,6 @@
 // Package signsvc 는 서명 서버의 트랜잭션 서명 처리(설계서 5.3)다.
 //
-// M1(T1.5) 구현 범위: 1~4, 7~9단계. 5단계(정책)와 6단계(승인 검증)는 M2(T2.3, T2.4)에서 채운다.
-// 그때까지 이 서비스를 여는 HTTP 경로는 통합 시험용 빌드 태그(signtx_m1)로만 등록한다.
+// 1~9단계를 모두 검사한다. 하나라도 실패하면 서명하지 않고, 거부를 사유와 함께 감사로그에 남긴다.
 // 검사 단계를 건너뛰는 옵션은 두지 않는다.
 package signsvc
 
@@ -14,14 +13,18 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/go-sql-driver/mysql"
 
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/approval"
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/audit"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/evmtx"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/intent"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/keyreg"
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/policy"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/signer"
 )
 
@@ -35,6 +38,8 @@ const (
 	CodeLedgerUnknown    = "LEDGER_UNKNOWN"             // 3
 	CodeKeyNotAvailable  = "KEY_NOT_AVAILABLE"          // 4
 	CodeKeyFrozen        = "KEY_FROZEN"                 // 4
+	CodeKeyNotSignable   = "KEY_PURPOSE_NOT_SIGNABLE"   // 4 (AUDIT 키는 tx 서명에 쓰지 않는다)
+	CodeApprovalInvalid  = "APPROVAL_INVALID"           // 6 (형식 오류)
 	CodeSignFailed       = "HSM_SIGN_FAILED"            // 8
 	CodeSigMismatch      = "SIGNATURE_ADDRESS_MISMATCH" // 8
 	CodeStoreFailed      = "SIGN_STORE_FAILED"          // 9
@@ -55,10 +60,10 @@ func reject(step int, code, format string, a ...any) *Rejection {
 
 // Request 는 POST /v1/sign/tx 본문이다.
 type Request struct {
-	Intent     json.RawMessage   `json:"intent"`
-	IntentHash string            `json:"intent_hash"` // 16진수 64자. 서명 서버는 다시 계산해 대조만 한다
-	Approvals  []json.RawMessage `json:"approvals"`   // M2(6단계)에서 검증한다
-	UnsignedTx string            `json:"unsigned_tx"` // 0x + type 2 미서명 인코딩(evmtx.EncodeUnsigned)
+	Intent     json.RawMessage     `json:"intent"`
+	IntentHash string              `json:"intent_hash"` // 16진수 64자. 서명 서버는 다시 계산해 대조만 한다
+	Approvals  []approval.Approval `json:"approvals"`   // 6단계에서 승인자 명부·정책과 대조한다
+	UnsignedTx string              `json:"unsigned_tx"` // 0x + type 2 미서명 인코딩(evmtx.EncodeUnsigned)
 }
 
 // Response 는 서명 결과다. 같은 request_id 재호출에는 저장된 같은 값을 돌려준다(D-6).
@@ -78,6 +83,8 @@ type Service struct {
 	MaxGas  uint64
 	Callers []string // 이 처리를 요청할 수 있는 호출자 CN(1단계)
 	Now     func() time.Time
+	// OnAuditError 는 거부 감사 기록이 실패했을 때 부른다(로그용).
+	OnAuditError func(error)
 }
 
 func (s *Service) now() time.Time {
@@ -88,7 +95,49 @@ func (s *Service) now() time.Time {
 }
 
 // SignTx 는 설계서 5.3 의 순서대로 검사하고, 하나라도 실패하면 서명하지 않는다.
+// 거부는 업무 트랜잭션이 롤백된 뒤이므로 별도 트랜잭션으로 감사로그에 남긴다.
 func (s *Service) SignTx(ctx context.Context, caller string, req Request) (*Response, error) {
+	res, err := s.signTx(ctx, caller, req)
+	var rj *Rejection
+	if errors.As(err, &rj) {
+		s.auditRejection(ctx, caller, req, rj)
+	}
+	return res, err
+}
+
+func (s *Service) auditRejection(ctx context.Context, caller string, req Request, rj *Rejection) {
+	p := map[string]any{"step": rj.Step, "code": rj.Code, "reason": truncate(rj.Msg, 300)}
+	subject := "-"
+	// 거부 사유를 남길 때는 검증되지 않은 intent 에서 식별 필드만 가볍게 읽는다.
+	var peek struct {
+		RequestID     string `json:"request_id"`
+		LedgerID      string `json:"ledger_id"`
+		InstitutionID string `json:"institution_id"`
+		KeyPurpose    string `json:"key_purpose"`
+		DrafterID     string `json:"drafter_id"`
+	}
+	if json.Unmarshal(req.Intent, &peek) == nil {
+		subject = truncate(peek.RequestID, 64)
+		p["request_id"], p["ledger_id"], p["institution_id"] = subject, truncate(peek.LedgerID, 64), truncate(peek.InstitutionID, 64)
+		p["purpose"], p["drafter_id"] = truncate(peek.KeyPurpose, 32), truncate(peek.DrafterID, 64)
+	}
+	if _, err := audit.AppendTx(context.WithoutCancel(ctx), s.DB, audit.Entry{Actor: truncate(caller, 64), Action: "SIGN_REJECTED", Subject: subject, Payload: p}); err != nil && s.OnAuditError != nil {
+		s.OnAuditError(err)
+	}
+}
+
+// truncate 는 UTF-8 문자 경계를 지키며 n 바이트 이하로 자른다.
+func truncate(v string, n int) string {
+	if len(v) <= n {
+		return v
+	}
+	for n > 0 && !utf8.RuneStart(v[n]) {
+		n--
+	}
+	return v[:n]
+}
+
+func (s *Service) signTx(ctx context.Context, caller string, req Request) (*Response, error) {
 	// 1. 호출자(mTLS 클라이언트 인증서 CN)
 	allowed := false
 	for _, c := range s.Callers {
@@ -132,7 +181,10 @@ func (s *Service) SignTx(ctx context.Context, caller string, req Request) (*Resp
 		return nil, reject(3, CodeLedgerUnknown, "원장 %q", in.LedgerID)
 	}
 
-	// 4. 키: (원장, 기관, 용도)의 ACTIVE 키, 동결 여부
+	// 4. 키: (원장, 기관, 용도)의 ACTIVE 키, 동결 여부. 감사 키는 tx 서명에 쓰지 않는다.
+	if in.KeyPurpose == signer.PurposeAudit {
+		return nil, reject(4, CodeKeyNotSignable, "AUDIT 키로는 트랜잭션에 서명하지 않는다")
+	}
 	key, err := keyreg.Lookup(ctx, s.DB, in.LedgerID, in.InstitutionID, in.KeyPurpose)
 	if err != nil {
 		if errors.Is(err, keyreg.ErrNoActiveKey) || errors.Is(err, keyreg.ErrAmbiguousKey) {
@@ -146,13 +198,49 @@ func (s *Service) SignTx(ctx context.Context, caller string, req Request) (*Resp
 		return nil, reject(4, CodeKeyFrozen, "동결됨(%s)", frozen)
 	}
 
-	// 5. 정책 평가 — M2(T2.3, T2.4)에서 구현
-	// 6. 승인 검증 — M2(T2.2, T2.4)에서 구현
+	// 5. 정책: (원장, 기관, 용도)의 ACTIVE 정책 하나로 함수·수량·수신 계좌·가스 상한을 평가한다.
+	tx, txErr := evmtx.DecodeUnsigned(rawTx)
+	gas := uint64(0)
+	if txErr == nil {
+		gas = tx.Gas()
+	}
+	pol, err := policy.Lookup(ctx, s.DB, in.LedgerID, in.InstitutionID, in.KeyPurpose)
+	if err != nil {
+		return nil, policyReject(5, err)
+	}
+	if err := policy.Evaluate(pol, in, gas); err != nil {
+		return nil, policyReject(5, err)
+	}
+
+	// 6. 승인: 항목 하나라도 잘못되면 요청 전체를 거부한다(중복 승인자, 미등록·비활성, 서명 불일치,
+	//    기안자 본인, 다른 기관, 정책 그룹 밖, 반려 포함). 서로 다른 유효 승인자가 M명 이상이어야 한다.
+	refs := make([]policy.ApproverRef, 0, len(req.Approvals))
+	seen := map[string]bool{}
+	for _, a := range req.Approvals {
+		if a.ApproverID == "" || !a.Decision.Valid() {
+			return nil, reject(6, CodeApprovalInvalid, "승인 항목 형식 오류(approver_id %q, decision %q)", a.ApproverID, a.Decision)
+		}
+		if seen[a.ApproverID] {
+			return nil, reject(6, policy.CodeApprovalDuplicate, "승인자 %s 중복", a.ApproverID)
+		}
+		seen[a.ApproverID] = true
+		ap, err := approval.VerifyOne(ctx, s.DB, a, h)
+		if err != nil {
+			var ae *approval.Error
+			if errors.As(err, &ae) {
+				return nil, reject(6, ae.Code, "%s", ae.Error())
+			}
+			return nil, err
+		}
+		refs = append(refs, policy.ApproverRef{ApproverID: ap.ApproverID, InstitutionID: ap.InstitutionID, Groups: ap.Groups, Decision: string(a.Decision)})
+	}
+	if err := policy.CheckApprovals(pol, in.DrafterID, in.InstitutionID, refs); err != nil {
+		return nil, policyReject(6, err)
+	}
 
 	// 7. 미서명 tx 해석과 intent 대조
-	tx, err := evmtx.DecodeUnsigned(rawTx)
-	if err != nil {
-		return nil, reject(7, evmtx.CodeTxInvalid, "%v", err)
+	if txErr != nil {
+		return nil, reject(7, evmtx.CodeTxInvalid, "%v", txErr)
 	}
 	if err := evmtx.VerifyTx(in, tx, chainID, s.MaxGas); err != nil {
 		var ve *evmtx.VerifyError
@@ -163,10 +251,10 @@ func (s *Service) SignTx(ctx context.Context, caller string, req Request) (*Resp
 	}
 
 	// 8·9. request_id 예약 → HSM 서명 → 결과 저장을 한 DB 트랜잭션으로 한다.
-	return s.signAndStore(ctx, in, h, unsignedHash, key, tx)
+	return s.signAndStore(ctx, caller, in, h, unsignedHash, key, tx)
 }
 
-func (s *Service) signAndStore(ctx context.Context, in *intent.Intent, intentHash, unsignedHash [32]byte, key *keyreg.Key, unsigned *types.Transaction) (*Response, error) {
+func (s *Service) signAndStore(ctx context.Context, caller string, in *intent.Intent, intentHash, unsignedHash [32]byte, key *keyreg.Key, unsigned *types.Transaction) (*Response, error) {
 	dbtx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, reject(9, CodeStoreFailed, "%v", err)
@@ -206,7 +294,15 @@ func (s *Service) signAndStore(ctx context.Context, in *intent.Intent, intentHas
 		txHash[:], raw, in.RequestID); err != nil {
 		return nil, reject(9, CodeStoreFailed, "저장: %v", err)
 	}
-	// TODO(T2.1): 서명 기록과 감사로그 기록을 이 트랜잭션에 함께 넣는다.
+	// 서명 기록과 감사 기록을 같은 트랜잭션으로 저장한다(5.3 의 9단계). 머리 잠금은 마지막에 잡는다.
+	if _, err := audit.Append(ctx, dbtx, audit.Entry{Actor: caller, Action: "SIGN_TX", Subject: in.RequestID, Payload: map[string]any{
+		"request_id": in.RequestID, "key_id": key.KeyID, "address": key.Address.Hex(), "ledger_id": in.LedgerID,
+		"institution_id": in.InstitutionID, "purpose": string(in.KeyPurpose), "intent_hash": hex.EncodeToString(intentHash[:]),
+		"unsigned_tx_hash": hex.EncodeToString(unsignedHash[:]), "tx_hash": txHash.Hex(), "drafter_id": in.DrafterID,
+		"function": in.Function, "contract": in.Contract,
+	}}); err != nil {
+		return nil, reject(9, CodeStoreFailed, "감사 기록: %v", err)
+	}
 	if err := dbtx.Commit(); err != nil {
 		return nil, reject(9, CodeStoreFailed, "커밋: %v", err)
 	}
@@ -249,6 +345,14 @@ func (s *Service) frozen(ctx context.Context, k *keyreg.Key) (string, error) {
 		return "", fmt.Errorf("동결 조회: %w", err)
 	}
 	return scope + ":" + target, nil
+}
+
+func policyReject(step int, err error) error {
+	var v *policy.Violation
+	if errors.As(err, &v) {
+		return reject(step, v.Code, "%s", v.Msg)
+	}
+	return err
 }
 
 func decodeHex(s string) ([]byte, error) {

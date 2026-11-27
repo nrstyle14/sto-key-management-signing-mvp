@@ -1,12 +1,11 @@
-//go:build integration && !signtx_m1
+//go:build integration
 
-// 통합 테스트: make up 으로 뜬 signerd, apid 의 mTLS·헬스(T1.1)와 기본 빌드에 서명 API 가 없음(T1.5).
+// 통합 테스트: make up 으로 뜬 signerd, apid 의 mTLS·헬스(T1.1).
 package test
 
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 	"testing"
 )
 
@@ -46,17 +45,5 @@ func TestServersRejectNoClientCert(t *testing.T) {
 			resp.Body.Close()
 			t.Fatalf("%s: 클라이언트 인증서 없는 호출이 허용됐다(%d)", u, resp.StatusCode)
 		}
-	}
-}
-
-// 기본 빌드의 signerd 에는 서명 API 가 없다(정책·승인 검사가 생기는 T2.4 전까지).
-func TestDefaultBuildHasNoSignAPI(t *testing.T) {
-	resp, err := mtlsClient(t, "apid", "localhost").Post(signerdURL+"/v1/sign/tx", "application/json", strings.NewReader(`{}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("기본 빌드에서 /v1/sign/tx 상태 %d (기대 404)", resp.StatusCode)
 	}
 }

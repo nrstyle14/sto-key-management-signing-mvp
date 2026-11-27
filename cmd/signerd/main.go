@@ -13,7 +13,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/approval"
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/audit"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/hsm"
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/keyreg"
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/policy"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/server"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/store"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/transport"
@@ -53,10 +57,12 @@ func main() {
 }
 
 type app struct {
-	cfg    *Config
-	log    *slog.Logger
-	db     *sql.DB
-	tokens map[string]*hsm.Token
+	cfg     *Config
+	log     *slog.Logger
+	db      *sql.DB
+	tokens  map[string]*hsm.Token
+	apiHead apiHead
+	cp      *checkpointer
 }
 
 // serve 는 기동 점검(설정 → DB·마이그레이션 → HSM 토큰 로그인 → 레지스트리 키 대조)을 통과해야만 띄운다(설계서 15절).
@@ -83,6 +89,18 @@ func serve(ctx context.Context, log *slog.Logger, cfgPath string) error {
 		return fmt.Errorf("기동 점검(키 레지스트리): %w", err)
 	}
 	log.Info("기동 점검 통과", "tokens", len(toks))
+	a.cp = a.newCheckpointer()
+	// api 감사 머리의 하한을 마지막 api 체크포인트로 정한다(재기동 뒤에도 역행 보고를 거부하기 위함).
+	if seq, h, ok, err := audit.LastCheckpointSeq(ctx, db, "api"); err != nil {
+		return fmt.Errorf("기동 점검(체크포인트): %w", err)
+	} else if ok {
+		a.apiHead.seq, a.apiHead.hash, a.apiHead.set = seq, h, true
+	}
+	if iv, err := time.ParseDuration(cfg.Audit.CheckpointInterval); err == nil && iv > 0 {
+		cctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		go a.cp.run(cctx, iv)
+	}
 
 	tlsCfg, err := transport.ServerTLSConfig(cfg.TLS, cfg.AllowedCallers)
 	if err != nil {
@@ -94,8 +112,55 @@ func serve(ctx context.Context, log *slog.Logger, cfgPath string) error {
 func (a *app) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", transport.RequireCaller([]string{"apid", "stoctl", "signerd"}, http.HandlerFunc(a.healthz)))
+	mux.Handle("GET /v1/audit/records", transport.RequireCaller([]string{"stoctl", "apid"}, transport.AuditRecordsHandler(a.db)))
+	mux.Handle("GET /v1/audit/head", transport.RequireCaller([]string{"stoctl", "apid"}, transport.AuditHeadHandler(a.db)))
+	mux.Handle("POST /v1/audit/api-head", transport.RequireCaller([]string{"apid"}, http.HandlerFunc(a.postAPIHead)))
+	mux.Handle("POST /v1/audit/checkpoints", transport.RequireCaller([]string{"stoctl"}, http.HandlerFunc(a.postCheckpoint)))
+	mux.Handle("GET /v1/audit/checkpoints", transport.RequireCaller([]string{"stoctl", "apid"}, http.HandlerFunc(a.listCheckpoints)))
+	mux.Handle("POST /v1/freezes", transport.RequireCaller([]string{"stoctl"}, http.HandlerFunc(a.postFreeze)))
+	mux.Handle("POST /v1/freezes/{id}/release", transport.RequireCaller([]string{"stoctl"}, http.HandlerFunc(a.postRelease)))
+	mux.Handle("GET /v1/freezes", transport.RequireCaller([]string{"stoctl", "apid"}, http.HandlerFunc(a.listFreezes)))
+	mux.Handle("GET /v1/keys", transport.RequireCaller([]string{"stoctl", "apid"}, http.HandlerFunc(a.listKeys)))
+	mux.Handle("GET /v1/policies", transport.RequireCaller([]string{"stoctl", "apid"}, http.HandlerFunc(a.listPolicies)))
+	mux.Handle("GET /v1/approvers", transport.RequireCaller([]string{"stoctl", "apid"}, http.HandlerFunc(a.listApprovers)))
 	registerSignRoutes(a, mux)
 	return mux
+}
+
+// listApprovers 는 승인자 명부(공개키 포함)다. 업무 서버는 조회만 한다(설계서 7.2).
+func (a *app) listApprovers(w http.ResponseWriter, r *http.Request) {
+	list, err := approval.List(r.Context(), a.db)
+	if err != nil {
+		transport.WriteError(w, http.StatusInternalServerError, transport.CodeInternal, "승인자 조회 실패")
+		return
+	}
+	transport.WriteJSON(w, http.StatusOK, map[string]any{"approvers": list})
+}
+
+// listKeys 는 키 레지스트리의 공개 정보다(개인키·PIN 없음). 동결(freezes)은 여기 반영되지 않고 서명 시 4단계에서 거부된다.
+func (a *app) listKeys(w http.ResponseWriter, r *http.Request) {
+	keys, err := keyreg.ListByStatus(r.Context(), a.db, keyreg.StatusActive, keyreg.StatusFrozen, keyreg.StatusRetired, keyreg.StatusDestroyed)
+	if err != nil {
+		transport.WriteError(w, http.StatusInternalServerError, transport.CodeInternal, "키 조회 실패")
+		return
+	}
+	out := make([]map[string]any, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, map[string]any{"key_id": k.KeyID, "ledger_id": k.LedgerID, "institution_id": k.InstitutionID,
+			"purpose": string(k.Purpose), "class": string(k.Class), "address": k.Address.Hex(), "status": string(k.Status),
+			"public_key": fmt.Sprintf("%x", []byte(k.PublicKey)), "token": k.TokenLabel})
+	}
+	transport.WriteJSON(w, http.StatusOK, map[string]any{"keys": out})
+}
+
+// listPolicies 는 ACTIVE 정책 목록이다. 업무 서버는 사전 검사에만 쓰고, 최종 판단은 서명 서버가 한다.
+func (a *app) listPolicies(w http.ResponseWriter, r *http.Request) {
+	list, err := policy.ListActive(r.Context(), a.db)
+	if err != nil {
+		transport.WriteError(w, http.StatusInternalServerError, transport.CodeInternal, "정책 조회 실패")
+		return
+	}
+	transport.WriteJSON(w, http.StatusOK, map[string]any{"policies": list})
 }
 
 // healthz 는 DB 와 HSM 토큰 세션 상태를 돌려준다. 하나라도 실패하면 503 이다.

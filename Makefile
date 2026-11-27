@@ -23,8 +23,6 @@ lint: ## 정적 검사와 import 경계 검사
 	@out="$$(gofmt -l cmd internal scripts test)"; if [ -n "$$out" ]; then echo "gofmt 필요:"; echo "$$out"; exit 1; fi
 	$(GO) vet ./...
 	$(GO) vet -tags integration ./...
-	$(GO) vet -tags signtx_m1 ./cmd/signerd
-	$(GO) vet -tags "integration signtx_m1" ./test/...
 	./scripts/check-imports.sh
 
 test-contracts: ## 컨트랙트 테스트
@@ -34,10 +32,11 @@ COMPOSE := docker compose -f deploy/docker-compose.yml
 
 INFRA := mysql besu-node1 besu-node2 besu-node3 besu-node4
 
-up: ## 로컬 환경 기동: 생성물·비밀 → 인프라 → 마이그레이션 → 토큰·부트스트랩 → signerd, apid
+up: ## 로컬 환경 기동: 생성물·비밀·승인자 키 → 인프라 → 마이그레이션 → 토큰·부트스트랩 → signerd, apid
 	./scripts/gen-besu-network.sh
 	./scripts/gen-secrets.sh
 	./scripts/gen-certs.sh
+	./scripts/gen-approvers.sh
 	$(COMPOSE) up -d --wait $(INFRA)
 	$(MAKE) --no-print-directory migrate
 	./scripts/init-signer.sh
@@ -49,10 +48,13 @@ down: ## 로컬 환경 종료(데이터 볼륨은 남긴다)
 migrate: ## DB 마이그레이션과 서버용 계정 권한 부여
 	$(GO) run ./scripts/dbmigrate
 
-it: ## 통합 테스트(make up 이후): 호스트 DB·서버 시험 → SoftHSM2 컨테이너 시험 → 서명 서버 종단 시험
-	$(GO) test -count=1 -tags integration ./test/... ./internal/keyreg/... ./internal/signsvc/...
+# 호스트에서 실행하는 통합 테스트 패키지(HSM 이 필요한 패키지는 scripts/it-hsm.sh 가 컨테이너에서 실행).
+# -p 1: 서버를 내렸다 올리는 test/ 와 레지스트리에 시험 키를 잠시 넣는 패키지가 겹치지 않게 한 패키지씩 실행한다.
+HOST_IT_PKGS := ./test/... ./internal/audit/... ./internal/approval/... ./internal/keyreg/... ./internal/signsvc/... ./internal/workflow/... ./internal/freeze/... ./internal/alarm/...
+
+it: ## 통합 테스트(make up 이후): 호스트 DB·서버·종단 시험 → SoftHSM2 컨테이너 시험
+	$(GO) test -count=1 -p 1 -tags integration $(HOST_IT_PKGS)
 	./scripts/it-hsm.sh
-	./scripts/it-signtx.sh
 
 demo: ## 전체 시연
 	@echo "demo: 아직 구현되지 않았다(T4.4에서 추가)"

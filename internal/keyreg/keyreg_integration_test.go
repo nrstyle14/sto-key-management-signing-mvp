@@ -19,6 +19,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/go-sql-driver/mysql"
 
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/policy"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/signer"
 )
 
@@ -232,7 +233,9 @@ func TestBootstrapInsertsAllSections(t *testing.T) {
 		Approvers: []BootstrapApprover{{ApproverID: "it-apr-" + s, Name: "시험 승인자", InstitutionID: "it-inst-" + s, Role: "APPROVER",
 			Ed25519Pubkey: hex.EncodeToString(make([]byte, 31)) + s[:2], Groups: []string{"it-grp-" + s}}},
 		Policies: []BootstrapPolicy{{PolicyID: "it-pol-" + s, LedgerID: "it-ledger-" + s, InstitutionID: "it-inst-" + s, KeyPurpose: signer.PurposeIssue,
-			Body: map[string]any{"required_approvals": 2, "allowed_functions": []any{"issue(address,uint256)"}}}},
+			Body: &policy.Body{AllowedFunctions: []string{"issue(address,uint256)"}, MaxAmount: "100000", RecipientWhitelist: true,
+				RequiredApprovals: 2, ApproverGroup: "it-grp-" + s, GasLimitCap: 500000},
+			Whitelist: []string{"0x70997970C51812dc3A010C7d01b50e0d17dc79C8"}}},
 	}
 	if err := f.Validate(scopes); err != nil {
 		t.Fatal(err)
@@ -254,7 +257,11 @@ func TestBootstrapInsertsAllSections(t *testing.T) {
 	if err := tx.QueryRowContext(ctx, `SELECT body_json FROM policies WHERE policy_id = ? AND version = 1`, "it-pol-"+s).Scan(&body); err != nil {
 		t.Fatal(err)
 	}
-	if body != `{"allowed_functions":["issue(address,uint256)"],"required_approvals":2}` {
+	if body != `{"allowed_functions":["issue(address,uint256)"],"max_amount":"100000","recipient_whitelist":true,"required_approvals":2,"approver_group":"it-grp-`+s+`","gas_limit_cap":500000}` {
 		t.Fatalf("정책 본문: %s", body)
+	}
+	p, err := policy.Lookup(ctx, tx, "it-ledger-"+s, "it-inst-"+s, signer.PurposeIssue)
+	if err != nil || len(p.Whitelist) != 1 || p.Body.MaxAmount != "100000" {
+		t.Fatalf("정책 조회: %+v %v", p, err)
 	}
 }

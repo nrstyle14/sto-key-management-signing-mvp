@@ -17,6 +17,13 @@ type Config struct {
 	DB             store.DBConfig     `yaml:"db"`
 	Ledger         LedgerConfig       `yaml:"ledger"`
 	Signer         SignerConfig       `yaml:"signer"`
+	Workflow       WorkflowConfig     `yaml:"workflow"`
+}
+
+// WorkflowConfig 는 작업자 주기와 미서명 tx 의 가스 한도다.
+type WorkflowConfig struct {
+	WorkerInterval string `yaml:"worker_interval"` // 예: "1s"
+	GasLimit       uint64 `yaml:"gas_limit"`
 }
 
 // LedgerConfig 는 원장 노드 접속 설정이다.

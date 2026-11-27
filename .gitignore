@@ -17,6 +17,9 @@ coverage.*
 *.share
 approver-keys/
 *.approver.json
+# 승인자 키 파일(암호화돼 있어도 커밋 금지)과 환경별로 생성되는 부트스트랩 파일
+/deploy/approvers/
+/deploy/signerd/generated/
 .env
 .env.*
 

@@ -146,3 +146,25 @@ func TestAppAccountsAreSchemaIsolated(t *testing.T) {
 		t.Fatal("api_app 의 DDL 이 허용됐다")
 	}
 }
+
+// 머리 잠금 행(audit_head)은 SELECT, UPDATE 만 된다. 행 추가·삭제는 거부된다.
+func TestAppAccountAuditHeadIsLockOnly(t *testing.T) {
+	for _, schema := range []string{"api", "signer"} {
+		t.Run(schema, func(t *testing.T) {
+			db := openAs(t, schema+"_app", schema)
+			tx, err := db.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback() }()
+			var seq uint64
+			if err := tx.QueryRow(`SELECT seq FROM audit_head WHERE id = 1 FOR UPDATE`).Scan(&seq); err != nil {
+				t.Fatalf("머리 행 잠금 읽기는 허용돼야 한다: %v", err)
+			}
+			_, err = tx.Exec(`INSERT INTO audit_head (id, seq, hash) VALUES (2, 0, REPEAT(CHAR(0), 32))`)
+			mustDenied(t, err, "audit_head INSERT")
+			_, err = tx.Exec(`DELETE FROM audit_head WHERE id = 1`)
+			mustDenied(t, err, "audit_head DELETE")
+		})
+	}
+}

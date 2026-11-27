@@ -3,7 +3,7 @@
 //   - 마이그레이션은 스키마별 마이그레이션 계정(<schema>_migrator)으로 실행한다(golang-migrate).
 //   - 서버용 계정(<schema>_app)의 권한은 마이그레이션 뒤 실제 테이블 목록을 보고 관리 계정(root)으로 부여한다.
 //     MySQL 은 스키마 권한에서 특정 테이블만 빼는 방법이 없으므로 테이블 단위로 준다.
-//   - 감사 테이블(audit_log, audit_checkpoints)에는 SELECT, INSERT 만 준다(NFR-2).
+//   - 감사 테이블(audit_log, audit_checkpoints)에는 SELECT, INSERT 만 준다(NFR-2). 머리 행(audit_head)은 SELECT, UPDATE 만.
 //
 // 비밀번호는 deploy/secrets/ 파일에서 읽어 메모리의 DSN 에만 쓰고 출력하지 않는다.
 package main
@@ -25,6 +25,9 @@ import (
 
 // appendOnly 는 서버용 계정에 SELECT, INSERT 만 주는 테이블이다.
 var appendOnly = map[string]bool{"audit_log": true, "audit_checkpoints": true}
+
+// lockOnly 는 서버용 계정에 SELECT, UPDATE 만 주는 테이블이다(감사 체인 머리 잠금 행).
+var lockOnly = map[string]bool{"audit_head": true}
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:3306", "MySQL 주소(로컬만)")
@@ -136,7 +139,7 @@ func run(addr, secrets, dir, schema string) error {
 	_ = rows.Close()
 
 	app := schema + "_app"
-	var full, ao, ro []string
+	var full, ao, lo, ro []string
 	for _, t := range tables {
 		var privs string
 		switch {
@@ -146,6 +149,9 @@ func run(addr, secrets, dir, schema string) error {
 		case appendOnly[t]:
 			privs = "SELECT, INSERT"
 			ao = append(ao, t)
+		case lockOnly[t]:
+			privs = "SELECT, UPDATE"
+			lo = append(lo, t)
 		default:
 			privs = "SELECT, INSERT, UPDATE, DELETE"
 			full = append(full, t)
@@ -159,6 +165,7 @@ func run(addr, secrets, dir, schema string) error {
 	fmt.Printf("%s: 마이그레이션 버전 %d\n", schema, ver)
 	fmt.Printf("  %s 권한 SELECT/INSERT/UPDATE/DELETE: %s\n", app, strings.Join(full, ", "))
 	fmt.Printf("  %s 권한 SELECT/INSERT(추가 전용): %s\n", app, strings.Join(ao, ", "))
+	fmt.Printf("  %s 권한 SELECT/UPDATE(머리 잠금): %s\n", app, strings.Join(lo, ", "))
 	fmt.Printf("  %s 권한 SELECT: %s\n", app, strings.Join(ro, ", "))
 	return nil
 }

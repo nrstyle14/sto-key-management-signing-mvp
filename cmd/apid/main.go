@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -14,10 +15,13 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/spf13/cobra"
 
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/alarm"
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/audit"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/server"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/store"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/transport"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/version"
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/workflow"
 )
 
 func main() {
@@ -45,9 +49,12 @@ func main() {
 }
 
 type app struct {
-	cfg *Config
-	db  *sql.DB
-	eth *ethclient.Client
+	cfg    *Config
+	db     *sql.DB
+	eth    *ethclient.Client
+	signer *signerClient
+	wf     *workflow.Service
+	alarms *alarm.Recorder
 }
 
 // serve 는 기동 점검(설정 → DB·마이그레이션 → RPC chainId)을 통과해야만 서버를 띄운다(설계서 15절).
@@ -75,13 +82,65 @@ func serve(ctx context.Context, log *slog.Logger, cfgPath string) error {
 	log.Info("기동 점검 통과", "ledger", cfg.Ledger.ID, "chain_id", cfg.Ledger.ChainID)
 
 	a := &app{cfg: cfg, db: db, eth: eth}
+	clientTLS, err := transport.ClientTLSConfig(cfg.TLS, cfg.Signer.ServerName)
+	if err != nil {
+		return err
+	}
+	a.signer = newSignerClient(transport.NewClient(clientTLS, 30*time.Second), cfg.Signer.URL)
+	gas := cfg.Workflow.GasLimit
+	if gas == 0 {
+		gas = 300000
+	}
+	interval, err := time.ParseDuration(cfg.Workflow.WorkerInterval)
+	if err != nil || interval <= 0 {
+		interval = time.Second
+	}
+	a.wf = &workflow.Service{DB: db, Dir: a.signer, LedgerID: cfg.Ledger.ID, GasLimit: gas}
+	worker := &workflow.SignWorker{DB: db, LedgerID: cfg.Ledger.ID, Dir: a.signer, Signer: a.signer, Chain: eth, ChainID: cfg.Ledger.ChainID, GasLimit: gas}
+	a.hookAlarms(log, worker)
+	wctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go worker.Run(wctx, interval, func(msg string, args ...any) { log.Warn(msg, args...) })
+	go a.pushAuditHead(wctx, interval, log)
+
 	tlsCfg, err := transport.ServerTLSConfig(cfg.TLS, cfg.AllowedCallers)
 	if err != nil {
 		return err
 	}
 	mux := http.NewServeMux()
+	ops := []string{"stoctl"}
+	mux.Handle("POST /v1/requests", transport.RequireCaller(ops, http.HandlerFunc(a.draft)))
+	mux.Handle("POST /v1/requests/{id}/approvals", transport.RequireCaller(ops, http.HandlerFunc(a.addApproval)))
+	mux.Handle("GET /v1/requests", transport.RequireCaller(ops, http.HandlerFunc(a.listRequests)))
+	mux.Handle("GET /v1/alarms", transport.RequireCaller(ops, http.HandlerFunc(a.listAlarms)))
+	mux.Handle("GET /v1/requests/{id}", transport.RequireCaller(ops, http.HandlerFunc(a.getRequest)))
 	mux.Handle("GET /healthz", transport.RequireCaller([]string{"stoctl", "apid"}, http.HandlerFunc(a.healthz)))
+	mux.Handle("GET /v1/audit/records", transport.RequireCaller([]string{"stoctl"}, transport.AuditRecordsHandler(db)))
+	mux.Handle("GET /v1/audit/head", transport.RequireCaller([]string{"stoctl"}, transport.AuditHeadHandler(db)))
 	return server.Run(ctx, log, cfg.Listen, tlsCfg, mux)
+}
+
+// pushAuditHead 는 api 감사 체인 머리가 바뀔 때마다 서명 서버에 알린다. 서명 서버가 응답하지 않으면 다음 주기에 다시 보낸다.
+func (a *app) pushAuditHead(ctx context.Context, interval time.Duration, log *slog.Logger) {
+	var lastSeq uint64
+	pushed := false
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		seq, h, err := audit.HeadOf(ctx, a.db)
+		if err == nil && (!pushed || seq != lastSeq) {
+			if err := a.signer.PushAPIHead(ctx, seq, hex.EncodeToString(h[:])); err != nil {
+				log.Warn("감사 머리 전달 실패", "err", err)
+			} else {
+				lastSeq, pushed = seq, true
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 func checkChainID(ctx context.Context, eth *ethclient.Client, want uint64) error {

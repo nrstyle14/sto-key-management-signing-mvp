@@ -24,9 +24,7 @@ RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 COPY scripts/probe-hsm ./scripts/probe-hsm
-# GO_BUILD_TAGS: 통합 시험용 빌드에서만 태그를 준다(예: T1.5 의 signtx_m1). 기본 빌드는 태그가 없다.
-ARG GO_BUILD_TAGS=""
-RUN go build -trimpath -tags "${GO_BUILD_TAGS}" -o /out/signerd ./cmd/signerd \
+RUN go build -trimpath -o /out/signerd ./cmd/signerd \
  && go build -trimpath -o /out/probe-hsm ./scripts/probe-hsm
 
 FROM debian:trixie-slim AS runtime
@@ -35,13 +33,13 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin signer \
  && usermod -aG softhsm signer \
- && mkdir -p /var/lib/softhsm/tokens \
- && chown -R signer:signer /var/lib/softhsm/tokens \
- && chmod 700 /var/lib/softhsm/tokens
+ && mkdir -p /var/lib/softhsm/tokens /var/lib/sto/checkpoints \
+ && chown -R signer:signer /var/lib/softhsm/tokens /var/lib/sto/checkpoints \
+ && chmod 700 /var/lib/softhsm/tokens /var/lib/sto/checkpoints
 COPY deploy/signerd/softhsm2.conf /etc/softhsm/softhsm2.conf
 ENV SOFTHSM2_CONF=/etc/softhsm/softhsm2.conf
 COPY --from=build /out/signerd /usr/local/bin/signerd
 COPY --from=build /out/probe-hsm /usr/local/bin/probe-hsm
-VOLUME ["/var/lib/softhsm/tokens"]
+VOLUME ["/var/lib/softhsm/tokens", "/var/lib/sto/checkpoints"]
 USER signer
 ENTRYPOINT ["/usr/local/bin/signerd"]

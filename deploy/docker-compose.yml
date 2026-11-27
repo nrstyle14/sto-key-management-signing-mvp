@@ -92,27 +92,27 @@ services:
   # 서명 서버. 토큰 저장소 볼륨은 이 서비스(와 같은 볼륨을 순서대로 쓰는 signerd-setup)만 마운트한다(D-4).
   # 원장(besu) 네트워크에 붙지 않는다.
   signerd:
-    image: sto-kms/signerd:${SIGNERD_IMAGE_TAG:-dev}
+    image: sto-kms/signerd:dev
     build:
       context: ..
       dockerfile: deploy/signerd/Dockerfile
       target: runtime
-      args:
-        GO_BUILD_TAGS: ${SIGNERD_GO_BUILD_TAGS:-}
     command: ["serve", "--config", "/etc/sto/signerd.yaml"]
     restart: unless-stopped
-    secrets: &signerd-secrets
+    secrets:
       - signer_app_password
       - hsm_pin_platform
       - hsm_pin_inst-a
       - hsm_pin_inst-b
       - hsm_pin_audit
-    volumes: &signerd-volumes
+    volumes:
       - ./signerd/signerd.yaml:/etc/sto/signerd.yaml:ro
       - ./certs/ca.crt:/etc/sto/certs/ca.crt:ro
       - ./certs/signerd.crt:/etc/sto/certs/signerd.crt:ro
       - ./certs/signerd.key:/etc/sto/certs/signerd.key:ro
       - signerd-tokens:/var/lib/softhsm/tokens
+      # 감사 체크포인트 파일(DB 와 다른 위치). 서명 서버만 마운트한다.
+      - signerd-checkpoints:/var/lib/sto/checkpoints
     networks: [db, signer]
     # 개발용으로 호스트 루프백에만 바인딩한다(통합 시험, stoctl 비상 동결).
     ports:
@@ -126,7 +126,7 @@ services:
   # 토큰 초기화와 부트스트랩을 한 번씩 실행하는 일회성 서비스. SO PIN 은 여기에만 준다.
   # signerd 가 멈춘 상태에서만 실행한다(scripts/init-signer.sh). 같은 토큰 볼륨을 동시에 쓰지 않는다.
   signerd-setup:
-    image: sto-kms/signerd:${SIGNERD_IMAGE_TAG:-dev}
+    image: sto-kms/signerd:dev
     profiles: [setup]
     secrets:
       - signer_app_password
@@ -140,7 +140,7 @@ services:
       - hsm_so_pin_audit
     volumes:
       - ./signerd/signerd.yaml:/etc/sto/signerd.yaml:ro
-      - ./signerd/bootstrap.yaml:/etc/sto/bootstrap.yaml:ro
+      - ./signerd/generated/bootstrap.yaml:/etc/sto/bootstrap.yaml:ro
       - signerd-tokens:/var/lib/softhsm/tokens
     networks: [db]
 
@@ -207,6 +207,7 @@ networks:
 volumes:
   mysql-data:
   signerd-tokens:
+  signerd-checkpoints:
   besu-node1-data:
   besu-node2-data:
   besu-node3-data:

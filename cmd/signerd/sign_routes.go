@@ -1,5 +1,3 @@
-//go:build signtx_m1
-
 package main
 
 import (
@@ -17,8 +15,7 @@ import (
 // signTxCallers 는 POST /v1/sign/tx 를 호출할 수 있는 CN 이다. 업무 서버만 허용한다.
 var signTxCallers = []string{"apid"}
 
-// registerSignRoutes 는 통합 시험용 빌드(signtx_m1)에서만 서명 API 를 연다(작업지시서 T1.5).
-// 이 단계의 서명 API 는 설계서 5.3 의 5·6단계(정책, 승인)가 아직 없다. T2.4 에서 채우고 태그를 없앤다.
+// registerSignRoutes 는 POST /v1/sign/tx 를 연다(설계서 5.3 의 1~9단계, 13.1).
 func registerSignRoutes(a *app, mux *http.ServeMux) {
 	toks := make([]*hsm.Token, 0, len(a.tokens))
 	for _, t := range a.tokens {
@@ -34,9 +31,13 @@ func registerSignRoutes(a *app, mux *http.ServeMux) {
 		Chains:  chains,
 		MaxGas:  a.cfg.Signing.MaxGasLimit,
 		Callers: signTxCallers,
+		OnAuditError: func(err error) {
+			a.log.Error("거부 감사 기록 실패", "err", err)
+		},
 	}
-	a.log.Warn("서명 API 활성(통합 시험용 빌드 signtx_m1: 정책·승인 검사 미구현)")
-	mux.Handle("POST /v1/sign/tx", transport.RequireCaller(signTxCallers, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// 경로 미들웨어는 핸드셰이크에서 허용된 모든 CN 을 통과시키고, 호출자 검사는 서비스의 1단계가 한다.
+	// 그래야 1단계 거부(업무 서버가 아닌 호출자)도 다른 거부와 같이 감사로그에 남는다.
+	mux.Handle("POST /v1/sign/tx", transport.RequireCaller(a.cfg.AllowedCallers, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req signsvc.Request
 		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 		dec.DisallowUnknownFields()
@@ -48,7 +49,6 @@ func registerSignRoutes(a *app, mux *http.ServeMux) {
 		if err != nil {
 			var rj *signsvc.Rejection
 			if errors.As(err, &rj) {
-				// TODO(T2.4): 모든 거부를 감사로그에 사유와 함께 남긴다.
 				a.log.Warn("서명 거부", "step", rj.Step, "code", rj.Code, "msg", rj.Msg)
 				transport.WriteJSON(w, statusOf(rj), rj)
 				return

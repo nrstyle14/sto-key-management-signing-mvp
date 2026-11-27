@@ -1,0 +1,69 @@
+# signerd init --bootstrap 입력 템플릿(설계서 2절 시연용 주체, D-8). 한 번만 적용된다.
+# 승인자 공개키는 환경마다 다르므로 "@key:<승인자ID>" 자리를 scripts/gen-approvers.sh 가
+# deploy/approvers/<ID>.json 의 공개키로 채워 deploy/signerd/generated/bootstrap.yaml 을 만든다(커밋 금지).
+tokens:
+  - label: besu-local.platform
+  - label: besu-local.inst-a
+  - label: besu-local.inst-b
+  - label: audit
+keys:
+  - key_id: key-platform-contract-admin-1
+    token: besu-local.platform
+    purpose: CONTRACT_ADMIN
+  - key_id: key-platform-emergency-1
+    token: besu-local.platform
+    purpose: EMERGENCY
+  - key_id: key-inst-a-issue-1
+    token: besu-local.inst-a
+    purpose: ISSUE
+  - key_id: key-inst-a-transfer-1
+    token: besu-local.inst-a
+    purpose: TRANSFER
+  - key_id: key-inst-b-transfer-1
+    token: besu-local.inst-b
+    purpose: TRANSFER
+  - key_id: key-audit-1
+    token: audit
+    purpose: AUDIT
+# 승인자 명부. 그룹은 정책의 approver_group 과 맞춘다.
+approvers:
+  - {approver_id: apr-a-01, name: 기관A 담당자1, institution_id: inst-a, role: APPROVER, ed25519_pubkey: "@key:apr-a-01", groups: [inst-a-approvers]}
+  - {approver_id: apr-a-02, name: 기관A 담당자2, institution_id: inst-a, role: APPROVER, ed25519_pubkey: "@key:apr-a-02", groups: [inst-a-approvers]}
+  - {approver_id: apr-a-03, name: 기관A 담당자3, institution_id: inst-a, role: APPROVER, ed25519_pubkey: "@key:apr-a-03", groups: [inst-a-approvers]}
+  - {approver_id: apr-b-01, name: 기관B 담당자1, institution_id: inst-b, role: APPROVER, ed25519_pubkey: "@key:apr-b-01", groups: [inst-b-approvers]}
+  - {approver_id: apr-b-02, name: 기관B 담당자2, institution_id: inst-b, role: APPROVER, ed25519_pubkey: "@key:apr-b-02", groups: [inst-b-approvers]}
+  - {approver_id: apr-b-03, name: 기관B 담당자3, institution_id: inst-b, role: APPROVER, ed25519_pubkey: "@key:apr-b-03", groups: [inst-b-approvers]}
+  - {approver_id: sec-01, name: 플랫폼 보안관리자1, institution_id: platform, role: SECURITY_ADMIN, ed25519_pubkey: "@key:sec-01", groups: [platform-security-admins]}
+  - {approver_id: sec-02, name: 플랫폼 보안관리자2, institution_id: platform, role: SECURITY_ADMIN, ed25519_pubkey: "@key:sec-02", groups: [platform-security-admins]}
+  - {approver_id: sec-03, name: 플랫폼 보안관리자3, institution_id: platform, role: SECURITY_ADMIN, ed25519_pubkey: "@key:sec-03", groups: [platform-security-admins]}
+# 정책(설계서 7.2). (원장, 기관, 용도)마다 ACTIVE 정책은 하나다. whitelist 는 수신 계좌(EIP-55 주소).
+# 이후 변경은 POLICY_CHANGE 요청(FR-3.4)으로만 한다(현재 미구현, 작업지시서에 해당 작업이 없다).
+policies:
+  - policy_id: pol-inst-a-issue
+    ledger_id: besu-local
+    institution_id: inst-a
+    key_purpose: ISSUE
+    body: {allowed_functions: ["issue(address,uint256)", "redeem(address,uint256)"], max_amount: "100000", recipient_whitelist: true, required_approvals: 2, approver_group: inst-a-approvers, gas_limit_cap: 500000}
+    whitelist: ["0x70997970C51812dc3A010C7d01b50e0d17dc79C8", "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"]
+  - policy_id: pol-inst-a-transfer
+    ledger_id: besu-local
+    institution_id: inst-a
+    key_purpose: TRANSFER
+    body: {allowed_functions: ["transferByAgent(address,address,uint256)", "registerAccount(address,string)", "setAccountRestricted(address,bool)"], max_amount: "100000", recipient_whitelist: true, required_approvals: 2, approver_group: inst-a-approvers, gas_limit_cap: 500000}
+    whitelist: ["0x70997970C51812dc3A010C7d01b50e0d17dc79C8", "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"]
+  - policy_id: pol-inst-b-transfer
+    ledger_id: besu-local
+    institution_id: inst-b
+    key_purpose: TRANSFER
+    body: {allowed_functions: ["transferByAgent(address,address,uint256)", "registerAccount(address,string)", "setAccountRestricted(address,bool)"], max_amount: "100000", recipient_whitelist: true, required_approvals: 2, approver_group: inst-b-approvers, gas_limit_cap: 500000}
+    whitelist: ["0x70997970C51812dc3A010C7d01b50e0d17dc79C8", "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"]
+  - policy_id: pol-platform-contract-admin
+    ledger_id: besu-local
+    institution_id: platform
+    key_purpose: CONTRACT_ADMIN
+    body: {allowed_functions: ["grantRole(bytes32,address)", "revokeRole(bytes32,address)", "renounceRole(bytes32,address)"], recipient_whitelist: false, required_approvals: 2, approver_group: platform-security-admins, gas_limit_cap: 500000}
+  - policy_id: pol-platform-emergency
+    ledger_id: besu-local
+    institution_id: platform
+    key_purpose: EMERGENCY
+    body: {allowed_functions: ["setCirculation(bool)", "pause()", "unpause()"], recipient_whitelist: false, required_approvals: 2, approver_group: platform-security-admins, gas_limit_cap: 500000}

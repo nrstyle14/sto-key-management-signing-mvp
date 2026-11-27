@@ -18,6 +18,22 @@ type Config struct {
 	HSM            HSMConfig          `yaml:"hsm"`
 	Ledgers        []LedgerConfig     `yaml:"ledgers"`
 	Signing        SigningConfig      `yaml:"signing"`
+	Freeze         FreezeConfig       `yaml:"freeze"`
+	Audit          AuditConfig        `yaml:"audit"`
+}
+
+// AuditConfig 는 감사 체크포인트 설정이다(설계서 8절, FR-4.3).
+type AuditConfig struct {
+	CheckpointInterval string `yaml:"checkpoint_interval"` // 예: "60s"
+	CheckpointFile     string `yaml:"checkpoint_file"`     // DB 와 다른 위치(별도 볼륨)
+	KeyLedger          string `yaml:"key_ledger"`          // AUDIT 키의 토큰 원장(global)
+	KeyInstitution     string `yaml:"key_institution"`     // AUDIT 키의 토큰 기관(audit)
+}
+
+// FreezeConfig 는 동결 해제에 필요한 보안관리자 그룹과 서명 수(M)다(설계서 7.3, D-5).
+type FreezeConfig struct {
+	AdminGroup       string `yaml:"admin_group"`
+	ReleaseApprovals int    `yaml:"release_approvals"`
 }
 
 // HSMConfig 는 PKCS#11 라이브러리와 토큰 목록이다. 토큰은 (원장, 기관) 단위다(설계서 6.1).
@@ -99,6 +115,12 @@ func (c *Config) validate() error {
 		if l.ID == "" || l.ChainID == 0 {
 			errs = append(errs, errors.New("ledgers[].id, chain_id 가 필요하다"))
 		}
+	}
+	if c.Freeze.AdminGroup == "" || c.Freeze.ReleaseApprovals < 2 {
+		errs = append(errs, errors.New("freeze.admin_group 과 freeze.release_approvals(2 이상)가 필요하다"))
+	}
+	if c.Audit.KeyLedger == "" || c.Audit.KeyInstitution == "" {
+		errs = append(errs, errors.New("audit.key_ledger, audit.key_institution 이 필요하다"))
 	}
 	if c.Signing.MaxGasLimit == 0 {
 		errs = append(errs, errors.New("signing.max_gas_limit 이 필요하다"))

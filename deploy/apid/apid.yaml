@@ -17,3 +17,6 @@ ledger:
 signer:
   url: https://signerd:8443
   server_name: signerd
+workflow:
+  worker_interval: "1s"
+  gas_limit: 300000
