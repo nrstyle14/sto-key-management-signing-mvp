@@ -30,7 +30,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/oklog/ulid/v2"
 
-	"github.com/da-infra/sto-key-management-signing-mvp/internal/approval"
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/adminsig"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/audit"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/backup"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/keyreg"
@@ -114,10 +114,7 @@ type Request struct {
 }
 
 // Signature 는 보안관리자 서명 한 건이다.
-type Signature struct {
-	AdminID   string `json:"admin_id"`
-	Signature string `json:"signature"`
-}
+type Signature = adminsig.Signature
 
 // Result 는 실행 결과다.
 type Result struct {
@@ -243,43 +240,16 @@ func (e *Executor) validate(r Request, now time.Time) error {
 	return nil
 }
 
-// verifyApprovals 는 서로 다른 활성 보안관리자 M명의 서명을 확인하고 그 ID 목록을 돌려준다.
-// 서명 하나라도 잘못되면 전체를 거부한다(D-14 와 같은 원칙).
+// verifyApprovals 는 서로 다른 활성 보안관리자 M명의 서명을 확인하고 그 ID 목록을 돌려준다(adminsig).
 func (e *Executor) verifyApprovals(ctx context.Context, r Request) ([]string, error) {
-	msg := r.Message()
-	seen := map[string]bool{}
-	var ids []string
-	for _, a := range r.Approvals {
-		if seen[a.AdminID] {
-			return nil, fail(CodeInvalid, "보안관리자 %s 중복", a.AdminID)
-		}
-		seen[a.AdminID] = true
-		ap, err := approval.Lookup(ctx, e.DB, a.AdminID)
-		if errors.Is(err, approval.ErrNotFound) {
-			return nil, fail(CodeAdmin, "등록되지 않은 승인자 %s", a.AdminID)
-		}
-		if err != nil {
-			return nil, err
-		}
-		inGroup := false
-		for _, g := range ap.Groups {
-			if g == e.AdminGroup {
-				inGroup = true
-			}
-		}
-		if ap.Status != "ACTIVE" || ap.Role != "SECURITY_ADMIN" || !inGroup {
-			return nil, fail(CodeAdmin, "%s 는 활성 보안관리자가 아니다", a.AdminID)
-		}
-		sig, err := hex.DecodeString(a.Signature)
-		if err != nil || len(sig) != ed25519.SignatureSize || !ed25519.Verify(ap.PublicKey, msg, sig) {
-			return nil, fail(CodeSignature, "%s 의 서명이 요청과 맞지 않는다", a.AdminID)
-		}
-		ids = append(ids, a.AdminID)
+	ids, err := adminsig.Verify(ctx, e.DB, e.AdminGroup, e.Approvals, r.Message(), r.Approvals)
+	var f *adminsig.Failure
+	if errors.As(err, &f) {
+		code := map[adminsig.Kind]string{adminsig.KindDuplicate: CodeInvalid, adminsig.KindNotAdmin: CodeAdmin,
+			adminsig.KindSignature: CodeSignature, adminsig.KindInsufficient: CodeInsufficient}[f.Kind]
+		return nil, fail(code, "%s", f.Msg)
 	}
-	if len(ids) < e.Approvals {
-		return nil, fail(CodeInsufficient, "키 작업에는 보안관리자 %d명의 서명이 필요하다(받은 서명 %d건)", e.Approvals, len(ids))
-	}
-	return ids, nil
+	return ids, err
 }
 
 // Execute 는 키 작업을 검증하고 실행한다. 거부와 실패는 감사로그(KEYOP_REJECTED)에 남는다.

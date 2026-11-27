@@ -19,11 +19,12 @@ build: ## 세 실행 파일 빌드
 test: ## 단위 테스트
 	$(GO) test ./...
 
-lint: ## 정적 검사와 import 경계 검사
+lint: ## 정적 검사, import 경계 검사, 요건 대응표의 경로·시험 이름 확인
 	@out="$$(gofmt -l cmd internal scripts test)"; if [ -n "$$out" ]; then echo "gofmt 필요:"; echo "$$out"; exit 1; fi
 	$(GO) vet ./...
 	$(GO) vet -tags integration ./...
 	./scripts/check-imports.sh
+	./scripts/check-traceability.sh
 
 gen: ## 컨트랙트 컴파일과 Go 바인딩 생성(abigen)
 	./scripts/gen-bindings.sh
@@ -54,11 +55,11 @@ migrate: ## DB 마이그레이션과 서버용 계정 권한 부여
 
 # 호스트에서 실행하는 통합 테스트 패키지(HSM 이 필요한 패키지는 scripts/it-hsm.sh 가 컨테이너에서 실행).
 # -p 1: 서버를 내렸다 올리는 test/ 와 레지스트리에 시험 키를 잠시 넣는 패키지가 겹치지 않게 한 패키지씩 실행한다.
-HOST_IT_PKGS := ./test/... ./internal/audit/... ./internal/approval/... ./internal/keyreg/... ./internal/signsvc/... ./internal/workflow/... ./internal/freeze/... ./internal/alarm/... ./internal/ledger/... ./internal/registry/... ./internal/keyops/...
+HOST_IT_PKGS := ./test/... ./internal/audit/... ./internal/approval/... ./internal/keyreg/... ./internal/signsvc/... ./internal/workflow/... ./internal/freeze/... ./internal/alarm/... ./internal/ledger/... ./internal/registry/... ./internal/keyops/... ./internal/policychange/... ./internal/linked/... ./internal/recon/...
 
 it: ## 통합 테스트(make up 이후): 호스트 DB·서버·종단 시험 → SoftHSM2 컨테이너 시험
 	$(GO) test -count=1 -p 1 -tags integration $(HOST_IT_PKGS)
 	./scripts/it-hsm.sh
 
-demo: ## 전체 시연
-	@echo "demo: 아직 구현되지 않았다(T4.4에서 추가)"
+demo: build ## 전체 시연(make up && make migrate 이후): 정상 흐름 → 거부 5종 → 키 교체 → 도난 대응 → 감사 → 대사
+	./scripts/demo.sh

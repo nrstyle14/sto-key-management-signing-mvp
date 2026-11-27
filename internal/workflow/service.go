@@ -162,6 +162,12 @@ func findApprover(list []approval.Approver, id string) *approval.Approver {
 
 // Draft 는 요청을 기안해 PENDING_APPROVAL 로 저장한다. 명백한 정책 위반은 여기서 일찍 돌려준다(최종 판단은 서명 서버).
 func (s *Service) Draft(ctx context.Context, d DraftInput) (*Request, error) {
+	return s.DraftWith(ctx, d, nil)
+}
+
+// DraftWith 는 Draft 와 같고, 요청을 저장하는 같은 DB 트랜잭션에서 extra 를 실행한다(연계장부 계좌 등록, D-22).
+// extra 가 오류를 돌려주면 요청도 저장되지 않는다.
+func (s *Service) DraftWith(ctx context.Context, d DraftInput, extra func(ctx context.Context, tx *sql.Tx, requestID string) error) (*Request, error) {
 	if d.Type == "" {
 		d.Type = intent.TypeTX
 	}
@@ -246,6 +252,11 @@ func (s *Service) Draft(ctx context.Context, d DraftInput) (*Request, error) {
 		"policy_id": p.PolicyID, "status": string(StatusPendingApproval), "args": in.Args, "code_hash": in.CodeHash,
 	}}); err != nil {
 		return nil, err
+	}
+	if extra != nil {
+		if err := extra(ctx, tx, in.RequestID); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err

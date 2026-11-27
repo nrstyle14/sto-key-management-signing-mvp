@@ -28,11 +28,12 @@
 | `make test` | 단위 테스트 |
 | `make gen` | 컨트랙트 컴파일(Foundry)과 Go 바인딩 생성(`internal/ledger/besu/sectoken`, 커밋 대상) |
 | `make test-contracts` | 컨트랙트 테스트(Foundry)와 커밋된 바인딩이 소스와 같은지 확인. 처음 받은 저장소는 `git submodule update --init` 먼저 |
-| `make lint` | gofmt, `go vet`(통합 태그 포함), import 경계 검사(`scripts/check-imports.sh`) |
+| `make lint` | gofmt, `go vet`(통합 태그 포함), import 경계 검사(`scripts/check-imports.sh`), 요건 대응표의 경로·시험 이름 확인(`scripts/check-traceability.sh`) |
 | `make up` / `make down` | 로컬 환경 기동·종료. `up`: 생성물(노드 키·비밀·인증서·승인자 키와 부트스트랩 파일) → Besu·MySQL → 마이그레이션 → HSM 토큰 초기화·부트스트랩(`scripts/init-signer.sh`) → signerd·apid |
 | `make migrate` | DB 마이그레이션과 서버용 계정 테이블 단위 권한 부여 |
 | `make it` | 통합 테스트(`make up` 이후): 호스트 DB·서버·종단 시험 → SoftHSM2 컨테이너 시험(`scripts/it-hsm.sh`) |
-| `make demo` | 전체 시연(T4.4에서 구현) |
+| `make demo` | 전체 시연(`make up && make migrate` 뒤, `scripts/demo.sh`): 정상 흐름 → 거부 5종 → 키 교체 → 도난 대응 → 감사 검증·변조 탐지 → 대사 불일치 탐지. 기대 결과가 아니면 멈춘다 |
+| `go run ./scripts/demo-attack insufficient-approvals\|calldata-swap\|audit-tamper\|holding-skew` | 시연용 공격 흉내(업무 서버 인증서로 서명 서버 직접 호출, 감사로그 일회용 복사본 변조, 연계장부 수량 변경) |
 | `scripts/check-besu.sh [--fault-test]` | Besu 블록 생성·검증 노드·가스비 0 tx·노드 장애 점검 |
 | `scripts/probe-hsm.sh sign\|wrap` | SoftHSM2 서명·래핑 실측(서명 서버 이미지 안에서 실행) |
 | `bin/stoctl request draft\|approve\|reject\|show\|list` | 업무 요청 기안·승인(승인자 키 파일로 서명)·조회 |
@@ -42,6 +43,10 @@
 | `bin/stoctl registry events --contract` | 보존된 원장 이벤트 조회 |
 | `bin/stoctl key list\|generate\|retire\|destroy\|rotate` | 키 레지스트리 조회, 키 작업(보안관리자 2명 서명), 키 교체(`--until`, `--resume`) |
 | `bin/stoctl key ceremony\|backup\|restore` | 래핑 키 의식(Shamir 조각 `deploy/ceremony/`), 루트 키 백업(`deploy/backups/`)·복원 |
+| `bin/stoctl account register\|add-registration\|show\|list\|holdings` | 연계장부 계좌 등록(무작위 주소, 원장 등록 요청 함께 기안)·조회, 보유 수량 |
+| `bin/stoctl policy list\|whitelist-add` | ACTIVE 정책 조회, 화이트리스트 주소 추가(보안관리자 2명 서명, `--account`로 연계장부 계좌 지정) |
+| `bin/stoctl recon run\|show\|list` | 연계장부·원장 대사(`--security`, 불일치면 종료 코드 3), 결과·불일치 상세 |
+| `http://127.0.0.1:9080/` | 읽기 전용 웹(요청·키·동결·알람·감사 머리·대사, `make up` 뒤) |
 | `bin/stoctl audit verify\|checkpoint\|trail\|head` | 두 감사 체인과 체크포인트 검증, 체크포인트 생성, 요청별 기록(`--require`), 머리 seq |
 | `scripts/bootstrap-security.sh [종목코드] [종목명]` | 종목 배포와 기관 키 역할 부여(모두 승인 요청), 원장·감사 확인 |
 | `scripts/flow-issue-transfer.sh <컨트랙트>` | stoctl 로 계좌 등록 → 발행 → 계좌대체, 보존 이벤트 확인 |

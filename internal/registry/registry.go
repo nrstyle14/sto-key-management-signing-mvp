@@ -36,6 +36,9 @@ type Worker struct {
 	ConfirmDepth uint64
 	// MaxBlocks 는 한 번에 읽는 블록 수 상한이다(기본 1000).
 	MaxBlocks uint64
+	// Apply 는 이벤트를 저장하는 같은 트랜잭션에서 이벤트마다 부른다(연계장부 보유 수량 갱신, 설계서 11절, D-22).
+	// 오류를 돌려주면 그 구간 전체가 롤백되고 다음 실행이 다시 읽는다.
+	Apply func(ctx context.Context, tx *sql.Tx, ev ledger.Event) error
 	// beforeCommit 은 시험용 훅이다: 이벤트를 넣은 뒤 커밋 전에 불린다(오류를 돌려주면 롤백 = 작업자 중단 흉내).
 	beforeCommit func(contract common.Address, inserted int) error
 }
@@ -132,6 +135,11 @@ func (w *Worker) advance(ctx context.Context, contract common.Address, upper uin
 		if _, err := tx.ExecContext(ctx, `INSERT INTO registry_events (ledger_id, contract_address, block_number, block_hash, block_time, tx_hash, log_index, event, payload_json, raw_log)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, w.LedgerID, contract.Hex(), e.BlockNumber, e.BlockHash[:], e.BlockTime, e.TxHash[:], e.LogIndex, e.Name, payload, string(raw)); err != nil {
 			return nil, fmt.Errorf("registry: 이벤트 저장(블록 %d, 로그 %d): %w", e.BlockNumber, e.LogIndex, err)
+		}
+		if w.Apply != nil {
+			if err := w.Apply(ctx, tx, e); err != nil {
+				return nil, fmt.Errorf("registry: 이벤트 반영(블록 %d, 로그 %d): %w", e.BlockNumber, e.LogIndex, err)
+			}
 		}
 	}
 	if w.beforeCommit != nil {

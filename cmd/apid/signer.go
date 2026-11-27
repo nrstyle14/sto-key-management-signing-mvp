@@ -57,6 +57,24 @@ func (c *signerClient) get(ctx context.Context, path string, out any) error {
 	return json.Unmarshal(raw, out)
 }
 
+// getFresh 는 캐시를 쓰지 않고 읽되, 서명 서버가 응답하지 않으면 마지막으로 받은 값을 쓴다.
+func (c *signerClient) getFresh(ctx context.Context, path string, out any) error {
+	raw, err := c.fetch(ctx, path)
+	if err != nil {
+		c.mu.Lock()
+		hit, ok := c.cache[path]
+		c.mu.Unlock()
+		if ok {
+			return json.Unmarshal(hit.raw, out)
+		}
+		return err
+	}
+	c.mu.Lock()
+	c.cache[path] = cached{at: time.Now(), raw: raw}
+	c.mu.Unlock()
+	return json.Unmarshal(raw, out)
+}
+
 func (c *signerClient) fetch(ctx context.Context, path string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
 	if err != nil {
@@ -81,7 +99,9 @@ func (c *signerClient) Policies(ctx context.Context) ([]policy.Policy, error) {
 	var v struct {
 		Policies []policy.Policy `json:"policies"`
 	}
-	return v.Policies, c.get(ctx, "/v1/policies", &v)
+	// 화이트리스트 추가(D-22) 직후의 기안이 사전 검사에서 막히지 않게 정책은 캐시하지 않는다.
+	err := c.getFresh(ctx, "/v1/policies", &v)
+	return v.Policies, err
 }
 
 func (c *signerClient) Approvers(ctx context.Context) ([]approval.Approver, error) {

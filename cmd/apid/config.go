@@ -11,13 +11,24 @@ import (
 
 // Config 는 apid 설정이다(설계서 15절). 비밀 값은 파일 경로로만 받는다.
 type Config struct {
-	Listen         string             `yaml:"listen"`
+	Listen string `yaml:"listen"`
+	// WebListen 은 읽기 전용 웹(D-9, 평문 HTTP)의 주소다. 비우면 띄우지 않는다. compose 는 127.0.0.1 로만 연다.
+	WebListen      string             `yaml:"web_listen"`
 	TLS            transport.TLSFiles `yaml:"tls"`
 	AllowedCallers []string           `yaml:"allowed_callers"`
 	DB             store.DBConfig     `yaml:"db"`
 	Ledger         LedgerConfig       `yaml:"ledger"`
 	Signer         SignerConfig       `yaml:"signer"`
 	Workflow       WorkflowConfig     `yaml:"workflow"`
+	Recon          ReconConfig        `yaml:"recon"`
+}
+
+// ReconConfig 는 대사 배치 설정이다(설계서 11절, FR-7.2).
+type ReconConfig struct {
+	// Interval 은 전체 종목 대사 주기다(예: "10m"). 비우면 주기 실행을 하지 않는다(stoctl recon run 으로만).
+	Interval string `yaml:"interval"`
+	// AlarmWithin 은 같은 종목의 대사 불일치 알람을 다시 내지 않는 기간이다(비우면 24시간).
+	AlarmWithin string `yaml:"alarm_within"`
 }
 
 // WorkflowConfig 는 작업자 주기와 미서명 tx 의 가스 한도다.

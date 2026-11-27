@@ -132,6 +132,7 @@ func (a *app) routes() http.Handler {
 	mux.Handle("GET /v1/policies", transport.RequireCaller([]string{"stoctl", "apid"}, http.HandlerFunc(a.listPolicies)))
 	mux.Handle("GET /v1/approvers", transport.RequireCaller([]string{"stoctl", "apid"}, http.HandlerFunc(a.listApprovers)))
 	mux.Handle("POST /v1/key-ops", transport.RequireCaller([]string{"stoctl"}, http.HandlerFunc(a.postKeyOp)))
+	mux.Handle("POST /v1/policy-changes", transport.RequireCaller([]string{"stoctl"}, http.HandlerFunc(a.postPolicyChange)))
 	registerSignRoutes(a, mux)
 	return mux
 }

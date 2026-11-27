@@ -295,6 +295,24 @@ func (a *Adapter) BalanceOf(ctx context.Context, contract, account common.Addres
 	return c.BalanceOf(&bind.CallOpts{Context: ctx}, account)
 }
 
+// BalanceOfAt 은 블록 block 시점의 잔고다(대사, 설계서 11절). 연계장부가 반영한 블록과 같은 시점을 비교한다.
+func (a *Adapter) BalanceOfAt(ctx context.Context, contract, account common.Address, block uint64) (*big.Int, error) {
+	c, err := sectoken.NewSecurityTokenCaller(contract, a.eth)
+	if err != nil {
+		return nil, err
+	}
+	return c.BalanceOf(&bind.CallOpts{Context: ctx, BlockNumber: new(big.Int).SetUint64(block)}, account)
+}
+
+// TotalSupplyAt 은 블록 block 시점의 총 발행 수량이다.
+func (a *Adapter) TotalSupplyAt(ctx context.Context, contract common.Address, block uint64) (*big.Int, error) {
+	c, err := sectoken.NewSecurityTokenCaller(contract, a.eth)
+	if err != nil {
+		return nil, err
+	}
+	return c.TotalSupply(&bind.CallOpts{Context: ctx, BlockNumber: new(big.Int).SetUint64(block)})
+}
+
 // TotalSupply 는 총 발행 수량이다.
 func (a *Adapter) TotalSupply(ctx context.Context, contract common.Address) (*big.Int, error) {
 	c, err := sectoken.NewSecurityTokenCaller(contract, a.eth)

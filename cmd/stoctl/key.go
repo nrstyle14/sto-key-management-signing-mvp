@@ -40,8 +40,13 @@ func (s *approverSet) pwFile(id string) string {
 	return filepath.Join(s.passwords, "approver_"+id+"_password")
 }
 
-// sign 은 키 작업 요청에 보안관리자마다 서명한다. 개인키는 서명 뒤 지운다.
-func (s *approverSet) sign(r *keyops.Request) error {
+// signable 은 보안관리자가 서명하는 요청이다(키 작업, 정책 변경).
+type signable interface {
+	Sign(adminID string, priv ed25519.PrivateKey)
+}
+
+// sign 은 키 작업·정책 변경 요청에 보안관리자마다 서명한다. 개인키는 서명 뒤 지운다.
+func (s *approverSet) sign(r signable) error {
 	for _, id := range s.ids {
 		got, priv, err := loadApproverKey(s.keyFile(id), s.pwFile(id))
 		if err != nil {

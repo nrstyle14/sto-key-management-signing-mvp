@@ -18,7 +18,10 @@ import (
 
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/alarm"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/audit"
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/ledger"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/ledger/besu"
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/linked"
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/recon"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/registry"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/server"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/store"
@@ -59,6 +62,8 @@ type app struct {
 	signer *signerClient
 	wf     *workflow.Service
 	alarms *alarm.Recorder
+	linked *linked.Service
+	recon  *recon.Runner
 }
 
 // serve 는 기동 점검(설정 → DB·마이그레이션 → RPC chainId)을 통과해야만 서버를 띄운다(설계서 15절).
@@ -103,6 +108,7 @@ func serve(ctx context.Context, log *slog.Logger, cfgPath string) error {
 	}
 	a.wf = &workflow.Service{DB: db, Dir: a.signer, LedgerID: cfg.Ledger.ID, GasLimit: gas, DeployGasLimit: cfg.Workflow.DeployGasLimit,
 		KnownCode: func(h common.Hash) bool { return h == besu.SecurityTokenCodeHash() }}
+	a.linked = &linked.Service{DB: db, WF: a.wf, LedgerID: cfg.Ledger.ID}
 	worker := &workflow.SignWorker{DB: db, LedgerID: cfg.Ledger.ID, Dir: a.signer, Signer: a.signer, Chain: led, Builder: led}
 	a.hookAlarms(log, worker)
 	wctx, cancel := context.WithCancel(ctx)
@@ -111,9 +117,28 @@ func serve(ctx context.Context, log *slog.Logger, cfgPath string) error {
 	go worker.Run(wctx, interval, logw)
 	go (&workflow.SubmitWorker{DB: db, LedgerID: cfg.Ledger.ID, Ledger: led}).Run(wctx, interval, logw)
 	go (&workflow.ReceiptWorker{DB: db, LedgerID: cfg.Ledger.ID, Ledger: led}).Run(wctx, interval, logw)
-	go (&registry.Worker{DB: db, LedgerID: cfg.Ledger.ID, Source: led, ConfirmDepth: cfg.Ledger.ConfirmDepth}).Run(wctx, interval, logw)
+	go (&registry.Worker{DB: db, LedgerID: cfg.Ledger.ID, Source: led, ConfirmDepth: cfg.Ledger.ConfirmDepth,
+		Apply: func(ctx context.Context, tx *sql.Tx, ev ledger.Event) error {
+			return linked.ApplyEvent(ctx, tx, cfg.Ledger.ID, ev)
+		}}).Run(wctx, interval, logw)
 	go a.pushAuditHead(wctx, interval, log)
+	a.recon = &recon.Runner{DB: db, LedgerID: cfg.Ledger.ID, Chain: led, Alarms: a.alarms}
+	if cfg.Recon.AlarmWithin != "" {
+		if a.recon.AlarmWithin, err = time.ParseDuration(cfg.Recon.AlarmWithin); err != nil || a.recon.AlarmWithin <= 0 {
+			return fmt.Errorf("recon.alarm_within %q", cfg.Recon.AlarmWithin)
+		}
+	}
+	if cfg.Recon.Interval != "" {
+		every, err := time.ParseDuration(cfg.Recon.Interval)
+		if err != nil || every <= 0 {
+			return fmt.Errorf("recon.interval %q", cfg.Recon.Interval)
+		}
+		go a.reconLoop(wctx, every, log)
+	}
 
+	if cfg.WebListen != "" {
+		go serveWeb(wctx, log, cfg.WebListen, a.webHandler(log))
+	}
 	tlsCfg, err := transport.ServerTLSConfig(cfg.TLS, cfg.AllowedCallers)
 	if err != nil {
 		return err
@@ -126,6 +151,14 @@ func serve(ctx context.Context, log *slog.Logger, cfgPath string) error {
 	mux.Handle("GET /v1/alarms", transport.RequireCaller(ops, http.HandlerFunc(a.listAlarms)))
 	mux.Handle("GET /v1/securities", transport.RequireCaller(ops, http.HandlerFunc(a.listSecurities)))
 	mux.Handle("GET /v1/registry-events", transport.RequireCaller(ops, http.HandlerFunc(a.listRegistryEvents)))
+	mux.Handle("POST /v1/accounts", transport.RequireCaller(ops, http.HandlerFunc(a.registerAccount)))
+	mux.Handle("POST /v1/accounts/{no}/registrations", transport.RequireCaller(ops, http.HandlerFunc(a.addRegistration)))
+	mux.Handle("GET /v1/accounts", transport.RequireCaller(ops, http.HandlerFunc(a.listAccounts)))
+	mux.Handle("GET /v1/accounts/{no}", transport.RequireCaller(ops, http.HandlerFunc(a.getAccount)))
+	mux.Handle("GET /v1/holdings", transport.RequireCaller(ops, http.HandlerFunc(a.listHoldings)))
+	mux.Handle("POST /v1/recon/run", transport.RequireCaller(ops, http.HandlerFunc(a.runRecon)))
+	mux.Handle("GET /v1/recon/runs", transport.RequireCaller(ops, http.HandlerFunc(a.listRecon)))
+	mux.Handle("GET /v1/recon/runs/{id}", transport.RequireCaller(ops, http.HandlerFunc(a.getRecon)))
 	mux.Handle("GET /v1/requests/{id}", transport.RequireCaller(ops, http.HandlerFunc(a.getRequest)))
 	mux.Handle("GET /healthz", transport.RequireCaller([]string{"stoctl", "apid"}, http.HandlerFunc(a.healthz)))
 	mux.Handle("GET /v1/audit/records", transport.RequireCaller([]string{"stoctl"}, transport.AuditRecordsHandler(db)))

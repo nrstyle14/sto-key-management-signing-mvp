@@ -162,6 +162,7 @@ services:
     networks: [db, signer, besu]
     ports:
       - "127.0.0.1:9443:9443"
+      - "127.0.0.1:9080:9080" # 읽기 전용 웹(D-9)
     healthcheck:
       test: ["CMD", "/usr/local/bin/apid", "healthcheck", "--config", "/etc/sto/apid.yaml"]
       interval: 3s

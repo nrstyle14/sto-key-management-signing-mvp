@@ -1,5 +1,7 @@
 # apid 설정(설계서 15절). 비밀번호는 Docker secret 파일 경로로만 가리킨다.
 listen: ":9443"
+# 읽기 전용 웹(D-9, T4.3). 인증이 없으므로 compose 에서 호스트 127.0.0.1 로만 연다.
+web_listen: ":9080"
 tls:
   ca: /etc/sto/certs/ca.crt
   cert: /etc/sto/certs/apid.crt
@@ -23,3 +25,7 @@ workflow:
   # 가스 한도(실측: 배포 약 150만, 함수 호출 5만~8만, scripts/probe-besu-resubmit). 정책 gas_limit_cap 이내여야 한다.
   gas_limit: 300000
   deploy_gas_limit: 3000000
+recon:
+  # 전체 종목 대사 주기(FR-7.2). 결과는 실행마다 남고, 같은 종목의 불일치 알람은 alarm_within 안에 다시 내지 않는다.
+  interval: "1h"
+  alarm_within: "24h"

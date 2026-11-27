@@ -67,6 +67,7 @@ var allowedKeys = map[string]bool{
 	"rule": true, "error": true, "code_hash": true, "contract_address": true, "block_number": true,
 	"issue_code": true, "args": true, "from_block": true, "to_block": true,
 	"objects_before": true, "objects_after": true, "commitment": true, "ceremony_id": true, "custodians": true,
+	"policy_ids": true, "account_no": true, "quantity": true, "run_id": true,
 }
 
 // ErrPayloadKey 는 허용되지 않은 payload 키다.

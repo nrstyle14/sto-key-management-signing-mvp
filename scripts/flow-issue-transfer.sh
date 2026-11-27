@@ -7,7 +7,7 @@
 #   3. 기관 A 발행 키로 A1 에 발행
 #   4. 기관 A 대체 키로 A1 → B1 계좌대체
 # 각 요청의 CONFIRMED 를 기다리고, 끝에 보존된 이벤트(registry_events)에서 결과를 확인한다.
-# 계좌 주소는 부트스트랩 정책의 화이트리스트 주소다(정책 변경 API 가 아직 없다, docs/01 미확정 항목).
+# 계좌 주소는 부트스트랩 정책의 화이트리스트 주소다(연계장부 밖 주소. 연계장부 계좌 흐름은 stoctl account register, T4.1).
 #
 # 사용: scripts/flow-issue-transfer.sh <종목 컨트랙트 주소> [발행 수량] [대체 수량]
 set -euo pipefail

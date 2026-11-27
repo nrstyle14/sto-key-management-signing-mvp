@@ -32,6 +32,9 @@ func main() {
 		securityCmd(g),
 		registryCmd(g),
 		keyCmd(g),
+		accountCmd(g),
+		policyCmd(g),
+		reconCmd(g),
 	)
 	if err := root.ExecuteContext(context.Background()); err != nil {
 		fmt.Fprintln(os.Stderr, "오류:", err)

@@ -37,7 +37,7 @@ approvers:
   - {approver_id: sec-02, name: 플랫폼 보안관리자2, institution_id: platform, role: SECURITY_ADMIN, ed25519_pubkey: "@key:sec-02", groups: [platform-security-admins]}
   - {approver_id: sec-03, name: 플랫폼 보안관리자3, institution_id: platform, role: SECURITY_ADMIN, ed25519_pubkey: "@key:sec-03", groups: [platform-security-admins]}
 # 정책(설계서 7.2). (원장, 기관, 용도)마다 ACTIVE 정책은 하나다. whitelist 는 수신 계좌(EIP-55 주소).
-# 이후 변경은 POLICY_CHANGE 요청(FR-3.4)으로만 한다(현재 미구현, 작업지시서에 해당 작업이 없다).
+# 이후 변경은 보안관리자 M-of-N 정책 변경으로만 한다(FR-3.4). 구현한 것은 화이트리스트 추가뿐이다(stoctl policy whitelist-add, D-22).
 policies:
   - policy_id: pol-inst-a-issue
     ledger_id: besu-local
