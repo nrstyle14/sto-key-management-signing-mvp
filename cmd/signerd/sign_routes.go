@@ -5,9 +5,6 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/da-infra/sto-key-management-signing-mvp/internal/hsm"
-	"github.com/da-infra/sto-key-management-signing-mvp/internal/keyreg"
-	signerhsm "github.com/da-infra/sto-key-management-signing-mvp/internal/signer/hsm"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/signsvc"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/transport"
 )
@@ -17,17 +14,13 @@ var signTxCallers = []string{"apid"}
 
 // registerSignRoutes 는 POST /v1/sign/tx 를 연다(설계서 5.3 의 1~9단계, 13.1).
 func registerSignRoutes(a *app, mux *http.ServeMux) {
-	toks := make([]*hsm.Token, 0, len(a.tokens))
-	for _, t := range a.tokens {
-		toks = append(toks, t)
-	}
 	chains := map[string]uint64{}
 	for _, l := range a.cfg.Ledgers {
 		chains[l.ID] = l.ChainID
 	}
 	svc := &signsvc.Service{
 		DB:      a.db,
-		Signer:  signerhsm.New(toks, keyreg.TokenLabelOf(a.db)),
+		Signer:  a.hsm,
 		Chains:  chains,
 		MaxGas:  a.cfg.Signing.MaxGasLimit,
 		Callers: signTxCallers,

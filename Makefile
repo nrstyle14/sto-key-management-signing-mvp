@@ -7,7 +7,7 @@ PKG := github.com/da-infra/sto-key-management-signing-mvp
 LDFLAGS := -X $(PKG)/internal/version.Version=$(VERSION) -X $(PKG)/internal/version.Commit=$(COMMIT)
 CMDS := apid signerd stoctl
 
-.PHONY: build test lint test-contracts up down migrate it demo
+.PHONY: build test lint gen test-contracts up down migrate it demo
 
 build: ## 세 실행 파일 빌드
 	@mkdir -p bin
@@ -25,8 +25,12 @@ lint: ## 정적 검사와 import 경계 검사
 	$(GO) vet -tags integration ./...
 	./scripts/check-imports.sh
 
-test-contracts: ## 컨트랙트 테스트
-	@echo "test-contracts: 아직 구현되지 않았다(T3.1에서 추가)"
+gen: ## 컨트랙트 컴파일과 Go 바인딩 생성(abigen)
+	./scripts/gen-bindings.sh
+
+test-contracts: ## 컨트랙트 테스트(Foundry)와 커밋된 바인딩이 소스와 같은지 확인
+	cd contracts && forge test
+	./scripts/gen-bindings.sh --check
 
 COMPOSE := docker compose -f deploy/docker-compose.yml
 
@@ -50,7 +54,7 @@ migrate: ## DB 마이그레이션과 서버용 계정 권한 부여
 
 # 호스트에서 실행하는 통합 테스트 패키지(HSM 이 필요한 패키지는 scripts/it-hsm.sh 가 컨테이너에서 실행).
 # -p 1: 서버를 내렸다 올리는 test/ 와 레지스트리에 시험 키를 잠시 넣는 패키지가 겹치지 않게 한 패키지씩 실행한다.
-HOST_IT_PKGS := ./test/... ./internal/audit/... ./internal/approval/... ./internal/keyreg/... ./internal/signsvc/... ./internal/workflow/... ./internal/freeze/... ./internal/alarm/...
+HOST_IT_PKGS := ./test/... ./internal/audit/... ./internal/approval/... ./internal/keyreg/... ./internal/signsvc/... ./internal/workflow/... ./internal/freeze/... ./internal/alarm/... ./internal/ledger/... ./internal/registry/... ./internal/keyops/...
 
 it: ## 통합 테스트(make up 이후): 호스트 DB·서버·종단 시험 → SoftHSM2 컨테이너 시험
 	$(GO) test -count=1 -p 1 -tags integration $(HOST_IT_PKGS)

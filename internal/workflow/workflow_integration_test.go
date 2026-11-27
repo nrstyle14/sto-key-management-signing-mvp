@@ -26,6 +26,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/approval"
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/evmtx"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/intent"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/policy"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/signsvc"
@@ -187,7 +188,7 @@ func apiCode(err error) string {
 }
 
 func (f *fx) worker(s *stubSigner) *SignWorker {
-	return &SignWorker{DB: f.db, LedgerID: f.ledger, Dir: f.dir, Signer: s, Chain: fakeChain{pending: 7}, ChainID: 20261124, GasLimit: 300000}
+	return &SignWorker{DB: f.db, LedgerID: f.ledger, Dir: f.dir, Signer: s, Chain: fakeChain{pending: 7}, Builder: evmtx.Builder{ChainID: 20261124, GasLimit: 300000, DeployGasLimit: 3000000}}
 }
 
 func (f *fx) status(t *testing.T, id string) Status {

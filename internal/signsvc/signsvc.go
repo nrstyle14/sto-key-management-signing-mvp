@@ -39,6 +39,7 @@ const (
 	CodeKeyNotAvailable  = "KEY_NOT_AVAILABLE"          // 4
 	CodeKeyFrozen        = "KEY_FROZEN"                 // 4
 	CodeKeyNotSignable   = "KEY_PURPOSE_NOT_SIGNABLE"   // 4 (AUDIT 키는 tx 서명에 쓰지 않는다)
+	CodeKeyMismatch      = "KEY_ADDRESS_MISMATCH"       // 4 (업무 서버가 기대한 서명 키가 지금의 ACTIVE 키가 아니다, T3.5)
 	CodeApprovalInvalid  = "APPROVAL_INVALID"           // 6 (형식 오류)
 	CodeSignFailed       = "HSM_SIGN_FAILED"            // 8
 	CodeSigMismatch      = "SIGNATURE_ADDRESS_MISMATCH" // 8
@@ -64,6 +65,10 @@ type Request struct {
 	IntentHash string              `json:"intent_hash"` // 16진수 64자. 서명 서버는 다시 계산해 대조만 한다
 	Approvals  []approval.Approval `json:"approvals"`   // 6단계에서 승인자 명부·정책과 대조한다
 	UnsignedTx string              `json:"unsigned_tx"` // 0x + type 2 미서명 인코딩(evmtx.EncodeUnsigned)
+	// SignerAddress 는 업무 서버가 nonce 를 할당할 때 쓴 서명 키 주소다(선택, 업무 서버는 항상 보낸다).
+	// 있으면 4단계에서 (원장, 기관, 용도)의 ACTIVE 키 주소와 같아야 한다. 키 교체·퇴역 뒤에 이전 키 주소로
+	// 준비된 요청은 여기서 거부된다(서명 키는 여전히 범위로만 고른다, FR-2.1).
+	SignerAddress string `json:"signer_address,omitempty"`
 }
 
 // Response 는 서명 결과다. 같은 request_id 재호출에는 저장된 같은 값을 돌려준다(D-6).
@@ -73,6 +78,15 @@ type Response struct {
 	Address   string `json:"address"`
 	TxHash    string `json:"tx_hash"`
 	SignedTx  string `json:"signed_tx"`
+}
+
+// describeAddress 는 주소에 해당하는 레지스트리 키의 상태를 사유 메시지용으로 돌려준다.
+func (s *Service) describeAddress(ctx context.Context, addr string) string {
+	var id, status string
+	if err := s.DB.QueryRowContext(ctx, "SELECT key_id, status FROM `keys` WHERE address = ?", common.HexToAddress(addr).Hex()).Scan(&id, &status); err != nil {
+		return ""
+	}
+	return fmt.Sprintf(" (그 주소는 %s 키 %s)", status, id)
 }
 
 // Service 는 서명 처리기다.
@@ -197,6 +211,9 @@ func (s *Service) signTx(ctx context.Context, caller string, req Request) (*Resp
 	} else if frozen != "" {
 		return nil, reject(4, CodeKeyFrozen, "동결됨(%s)", frozen)
 	}
+	if req.SignerAddress != "" && !strings.EqualFold(req.SignerAddress, key.Address.Hex()) {
+		return nil, reject(4, CodeKeyMismatch, "요청의 서명 키 %s 는 지금의 ACTIVE 키(%s)가 아니다%s", req.SignerAddress, key.KeyID, s.describeAddress(ctx, req.SignerAddress))
+	}
 
 	// 5. 정책: (원장, 기관, 용도)의 ACTIVE 정책 하나로 함수·수량·수신 계좌·가스 상한을 평가한다.
 	tx, txErr := evmtx.DecodeUnsigned(rawTx)
@@ -299,7 +316,7 @@ func (s *Service) signAndStore(ctx context.Context, caller string, in *intent.In
 		"request_id": in.RequestID, "key_id": key.KeyID, "address": key.Address.Hex(), "ledger_id": in.LedgerID,
 		"institution_id": in.InstitutionID, "purpose": string(in.KeyPurpose), "intent_hash": hex.EncodeToString(intentHash[:]),
 		"unsigned_tx_hash": hex.EncodeToString(unsignedHash[:]), "tx_hash": txHash.Hex(), "drafter_id": in.DrafterID,
-		"function": in.Function, "contract": in.Contract,
+		"function": in.Function, "contract": in.Contract, "type": in.Type, "args": in.Args, "code_hash": in.CodeHash,
 	}}); err != nil {
 		return nil, reject(9, CodeStoreFailed, "감사 기록: %v", err)
 	}

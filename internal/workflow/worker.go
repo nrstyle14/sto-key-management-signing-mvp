@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"math/big"
 	"time"
 	"unicode/utf8"
 
@@ -15,7 +14,6 @@ import (
 
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/approval"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/audit"
-	"github.com/da-infra/sto-key-management-signing-mvp/internal/evmtx"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/intent"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/signsvc"
 )
@@ -25,8 +23,18 @@ type Chain interface {
 	PendingNonceAt(ctx context.Context, addr common.Address) (uint64, error)
 }
 
+// TxBuilder 는 intent 를 미서명 tx 로 만든다(ledger.Ledger.BuildTx).
+type TxBuilder interface {
+	BuildTx(ctx context.Context, in *intent.Intent, from common.Address, nonce uint64) ([]byte, error)
+}
+
 // AllocateNonce 는 (원장, 주소)의 다음 nonce 를 tx 안에서 잠그고 할당한다(설계서 5.5).
-// DB 값과 체인의 pending nonce 중 큰 값을 쓰므로, 다른 경로로 nonce 가 앞서 나간 경우에도 겹치지 않는다.
+//   - 빈자리 재사용(T3.2): 서명·제출되지 않고 FAILED·EXPIRED 로 끝난 요청의 nonce 가 체인 pending 이상이고
+//     살아 있는 다른 요청이 쓰지 않으면 그 값을 먼저 다시 쓴다. Besu 는 빈자리 뒤의 tx 를 풀에 붙잡아 두므로
+//     (실측) 빈자리를 메우지 않으면 그 주소의 이후 tx 가 모두 멈춘다.
+//   - 빈자리가 없으면 DB 의 다음 값과 체인의 pending nonce 중 큰 값을 쓴다(다른 경로로 앞서 나간 경우에도 겹치지 않음).
+//
+// 노드가 한 번이라도 받은 tx(submitted_at 있음)의 nonce 는 재사용하지 않는다. 할당은 nonces 행 잠금으로 직렬화된다.
 func AllocateNonce(ctx context.Context, tx *sql.Tx, chain Chain, ledgerID string, addr common.Address) (uint64, error) {
 	pending, err := chain.PendingNonceAt(ctx, addr)
 	if err != nil {
@@ -49,6 +57,13 @@ func AllocateNonce(ctx context.Context, tx *sql.Tx, chain Chain, ledgerID string
 		if err != nil {
 			return 0, err
 		}
+		gap, ok, err := freeGap(ctx, tx, ledgerID, addr, pending, next)
+		if err != nil {
+			return 0, err
+		}
+		if ok {
+			return gap, nil
+		}
 		n := max(next, pending)
 		if _, err := tx.ExecContext(ctx, `UPDATE nonces SET next_nonce = ? WHERE ledger_id = ? AND address = ?`, n+1, ledgerID, addr.Hex()); err != nil {
 			return 0, err
@@ -56,6 +71,28 @@ func AllocateNonce(ctx context.Context, tx *sql.Tx, chain Chain, ledgerID string
 		return n, nil
 	}
 	return 0, errors.New("workflow: nonce 행 생성 경합")
+}
+
+// freeGap 은 [pending, next) 구간에서 끝난 요청이 남긴 빈자리 중 가장 작은 nonce 를 찾는다.
+// 같은 nonce 를 쥔 살아 있는 요청(진행 중·확정, 또는 노드가 한 번이라도 받은 tx)이 있으면 빈자리가 아니다.
+func freeGap(ctx context.Context, tx *sql.Tx, ledgerID string, addr common.Address, pending, next uint64) (uint64, bool, error) {
+	if pending >= next {
+		return 0, false, nil
+	}
+	var n uint64
+	err := tx.QueryRowContext(ctx, `SELECT r.nonce FROM requests r
+		WHERE r.ledger_id = ? AND r.signer_address = ? AND r.nonce >= ? AND r.nonce < ?
+		  AND r.status IN ('FAILED', 'EXPIRED') AND r.submitted_at IS NULL
+		  AND NOT EXISTS (SELECT 1 FROM requests l WHERE l.ledger_id = r.ledger_id AND l.signer_address = r.signer_address
+		                  AND l.nonce = r.nonce AND (l.status IN ('APPROVED', 'SIGNED', 'SUBMITTED', 'CONFIRMED') OR l.submitted_at IS NOT NULL))
+		ORDER BY r.nonce LIMIT 1`, ledgerID, addr.Hex(), pending, next).Scan(&n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return n, true, nil
 }
 
 // releaseNonce 는 서명되지 않고 끝난 요청(FAILED, EXPIRED)이 잡은 nonce 를 돌려준다(설계서 5.5).
@@ -90,8 +127,7 @@ type SignWorker struct {
 	Dir      Directory
 	Signer   SignerClient
 	Chain    Chain
-	ChainID  uint64
-	GasLimit uint64
+	Builder  TxBuilder
 	Now      func() time.Time
 	// OnSigned, OnFailed 는 알람 규칙(설계서 7.4)에 쓰는 훅이다.
 	OnSigned func(ctx context.Context, r *Request)
@@ -116,10 +152,11 @@ func (w *SignWorker) RunOnce(ctx context.Context) (bool, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 	var id, intentJSON string
+	var signerAddr sql.NullString
 	var hash, unsigned []byte
 	var expires time.Time
-	err = tx.QueryRowContext(ctx, `SELECT request_id, intent_json, intent_hash, unsigned_tx, expires_at FROM requests
-		WHERE status = 'APPROVED' AND ledger_id = ? ORDER BY updated_at LIMIT 1 FOR UPDATE SKIP LOCKED`, w.LedgerID).Scan(&id, &intentJSON, &hash, &unsigned, &expires)
+	err = tx.QueryRowContext(ctx, `SELECT request_id, intent_json, intent_hash, unsigned_tx, signer_address, expires_at FROM requests
+		WHERE status = 'APPROVED' AND ledger_id = ? ORDER BY updated_at LIMIT 1 FOR UPDATE SKIP LOCKED`, w.LedgerID).Scan(&id, &intentJSON, &hash, &unsigned, &signerAddr, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -167,11 +204,7 @@ func (w *SignWorker) RunOnce(ctx context.Context) (bool, error) {
 		if err != nil {
 			return true, fmt.Errorf("%w: %v", ErrTransient, err)
 		}
-		data, err := in.Calldata()
-		if err != nil {
-			return true, err
-		}
-		raw, err := evmtx.EncodeUnsigned(evmtx.NewUnsigned(new(big.Int).SetUint64(w.ChainID), nonce, in.ContractAddress(), data, w.GasLimit))
+		raw, err := w.Builder.BuildTx(ctx, in, from, nonce)
 		if err != nil {
 			return true, err
 		}
@@ -183,7 +216,9 @@ func (w *SignWorker) RunOnce(ctx context.Context) (bool, error) {
 	}
 
 	// 2단계: 저장된 미서명 tx 와 승인들로 서명 요청(행 잠금을 쥔 채 한 번만 보낸다).
-	req := signsvc.Request{Intent: []byte(intentJSON), IntentHash: hex.EncodeToString(hash), UnsignedTx: "0x" + hex.EncodeToString(unsigned)}
+	// nonce 를 할당한 서명 키 주소를 함께 보낸다. 그 사이 키가 교체됐으면 서명 서버가 4단계에서 거부한다(T3.5).
+	req := signsvc.Request{Intent: []byte(intentJSON), IntentHash: hex.EncodeToString(hash), UnsignedTx: "0x" + hex.EncodeToString(unsigned),
+		SignerAddress: signerAddr.String}
 	rows, err := tx.QueryContext(ctx, `SELECT approver_id, decision, signature FROM approvals WHERE request_id = ? ORDER BY approver_id`, id)
 	if err != nil {
 		return true, err

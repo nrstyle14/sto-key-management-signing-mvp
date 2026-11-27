@@ -41,7 +41,7 @@ func auditCmd(g *globals) *cobra.Command {
 			}
 			return nil
 		},
-	})
+	}, trailCmd(g), headCmd(g))
 	return c
 }
 

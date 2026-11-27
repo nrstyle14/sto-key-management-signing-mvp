@@ -14,9 +14,12 @@ ledger:
   id: besu-local
   rpc_url: http://besu-node1:8545
   chain_id: 20261124
+  confirm_depth: 0
 signer:
   url: https://signerd:8443
   server_name: signerd
 workflow:
   worker_interval: "1s"
+  # 가스 한도(실측: 배포 약 150만, 함수 호출 5만~8만, scripts/probe-besu-resubmit). 정책 gas_limit_cap 이내여야 한다.
   gas_limit: 300000
+  deploy_gas_limit: 3000000

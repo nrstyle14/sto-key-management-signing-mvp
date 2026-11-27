@@ -36,3 +36,6 @@ approver-keys/
 .idea/
 .vscode/
 .DS_Store
+# 래핑 키 조각과 루트 키 백업 파일(T3.6, 커밋 금지)
+/deploy/ceremony/
+/deploy/backups/

@@ -3,6 +3,7 @@ package intent
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,8 +22,17 @@ import (
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/signer"
 )
 
-// Type 은 요청 유형이다. M1 에서는 TX 만 있다.
-const TypeTX = "TX"
+// 요청 유형
+const (
+	// TypeTX 는 배포된 컨트랙트의 함수 호출이다.
+	TypeTX = "TX"
+	// TypeDeploy 는 컨트랙트 배포다(T3.3, D-19). contract 는 0 주소, function 은 "constructor(…)",
+	// args 는 생성자 인자, code_hash 는 생성 바이트코드의 keccak256 이다.
+	TypeDeploy = "DEPLOY"
+)
+
+// ZeroAddress 는 배포 intent 의 contract 값이다.
+const ZeroAddress = "0x0000000000000000000000000000000000000000"
 
 // TimeLayout 은 expires_at 의 정규 형식이다(UTC, 초 단위, 소수점 없음).
 const TimeLayout = "2006-01-02T15:04:05Z"
@@ -39,6 +49,8 @@ type Intent struct {
 	Args          []string       `json:"args"`
 	DrafterID     string         `json:"drafter_id"`
 	ExpiresAt     string         `json:"expires_at"`
+	// CodeHash 는 DEPLOY 에만 있다(0x + 소문자 16진수 64자). TX 에는 키 자체가 없어야 한다.
+	CodeHash string `json:"code_hash,omitempty"`
 }
 
 // Error 는 intent 검증 오류다.
@@ -59,8 +71,10 @@ var (
 // Parse 는 JSON 을 엄격하게 해석하고 검증한다. 알 수 없는 필드, 빠진 필드, 비정규 값은 거부한다.
 func Parse(raw []byte) (*Intent, error) {
 	// encoding/json 은 필드 이름을 대소문자 구분 없이 맞추고 중복 키는 뒤 값을 쓴다.
-	// 그래서 최상위 키를 직접 읽어 정확히 열 개의 소문자 키가 한 번씩만 있는지 먼저 확인한다.
-	if err := checkKeys(raw); err != nil {
+	// 그래서 최상위 키를 직접 읽어 정해진 소문자 키가 한 번씩만 있는지 먼저 확인한다
+	// (공통 열 개, DEPLOY 는 code_hash 를 더해 열한 개).
+	hasCodeHash, err := checkKeys(raw)
+	if err != nil {
 		return nil, err
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -72,6 +86,9 @@ func Parse(raw []byte) (*Intent, error) {
 	if dec.More() {
 		return nil, bad("(json)", "객체 뒤에 다른 값이 있다")
 	}
+	if hasCodeHash != (in.Type == TypeDeploy) {
+		return nil, bad("code_hash", "DEPLOY 에만 있어야 한다")
+	}
 	if err := in.Validate(); err != nil {
 		return nil, err
 	}
@@ -80,17 +97,18 @@ func Parse(raw []byte) (*Intent, error) {
 
 var fieldNames = []string{"request_id", "type", "ledger_id", "institution_id", "key_purpose", "contract", "function", "args", "drafter_id", "expires_at"}
 
-// checkKeys 는 최상위 JSON 객체의 키가 fieldNames 와 정확히 같은지(대소문자 포함, 중복 없음) 확인한다.
-func checkKeys(raw []byte) error {
+// checkKeys 는 최상위 JSON 객체의 키가 fieldNames(+ 선택적 code_hash)와 정확히 같은지(대소문자 포함, 중복 없음) 확인한다.
+// code_hash 가 있었는지 돌려준다.
+func checkKeys(raw []byte) (bool, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	tok, err := dec.Token()
 	if err != nil {
-		return bad("(json)", "%v", err)
+		return false, bad("(json)", "%v", err)
 	}
 	if d, ok := tok.(json.Delim); !ok || d != '{' {
-		return bad("(json)", "객체가 아니다")
+		return false, bad("(json)", "객체가 아니다")
 	}
-	want := map[string]bool{}
+	want := map[string]bool{"code_hash": true}
 	for _, f := range fieldNames {
 		want[f] = true
 	}
@@ -98,27 +116,27 @@ func checkKeys(raw []byte) error {
 	for dec.More() {
 		tok, err := dec.Token()
 		if err != nil {
-			return bad("(json)", "%v", err)
+			return false, bad("(json)", "%v", err)
 		}
 		k, _ := tok.(string)
 		if !want[k] {
-			return bad(k, "알 수 없는 필드(대소문자 구분)")
+			return false, bad(k, "알 수 없는 필드(대소문자 구분)")
 		}
 		if seen[k] {
-			return bad(k, "중복된 필드")
+			return false, bad(k, "중복된 필드")
 		}
 		seen[k] = true
 		var skip json.RawMessage
 		if err := dec.Decode(&skip); err != nil {
-			return bad(k, "%v", err)
+			return false, bad(k, "%v", err)
 		}
 	}
 	for _, f := range fieldNames {
 		if !seen[f] {
-			return bad(f, "필드가 없다")
+			return false, bad(f, "필드가 없다")
 		}
 	}
-	return nil
+	return seen["code_hash"], nil
 }
 
 // Validate 는 각 필드가 정규 형식인지 확인한다.
@@ -126,7 +144,22 @@ func (in *Intent) Validate() error {
 	if u, err := ulid.ParseStrict(in.RequestID); err != nil || u.String() != in.RequestID {
 		return bad("request_id", "대문자 ULID 26자여야 한다")
 	}
-	if in.Type != TypeTX {
+	switch in.Type {
+	case TypeTX:
+		if in.CodeHash != "" {
+			return bad("code_hash", "TX 에는 쓸 수 없다")
+		}
+	case TypeDeploy:
+		if !isHash32(in.CodeHash) {
+			return bad("code_hash", "0x 와 소문자 16진수 64자여야 한다")
+		}
+		if in.Contract != ZeroAddress {
+			return bad("contract", "DEPLOY 는 0 주소여야 한다")
+		}
+		if !strings.HasPrefix(in.Function, "constructor(") {
+			return bad("function", "DEPLOY 는 constructor(…) 여야 한다")
+		}
+	default:
 		return bad("type", "지원하지 않는 유형 %q", in.Type)
 	}
 	for f, v := range map[string]string{"ledger_id": in.LedgerID, "institution_id": in.InstitutionID, "drafter_id": in.DrafterID} {
@@ -139,6 +172,9 @@ func (in *Intent) Validate() error {
 	}
 	if !isChecksumAddress(in.Contract) {
 		return bad("contract", "EIP-55 체크섬 주소여야 한다")
+	}
+	if in.Type == TypeTX && (in.Contract == ZeroAddress || strings.HasPrefix(in.Function, "constructor(")) {
+		return bad("function", "TX 는 0 주소나 생성자를 쓸 수 없다")
 	}
 	types, err := functionTypes(in.Function)
 	if err != nil {
@@ -179,6 +215,9 @@ func (in *Intent) Canonical() ([]byte, error) {
 		"key_purpose": string(in.KeyPurpose), "contract": in.Contract, "function": in.Function, "args": args,
 		"drafter_id": in.DrafterID, "expires_at": in.ExpiresAt,
 	}
+	if in.Type == TypeDeploy {
+		m["code_hash"] = in.CodeHash
+	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -199,7 +238,31 @@ func (in *Intent) Hash() ([32]byte, error) {
 
 // Calldata 는 함수 선택자(keccak256(함수 서명)의 앞 4바이트)와 ABI 인코딩한 인자다.
 // 서명 서버는 이 값과 미서명 tx 의 data 를 바이트 단위로 비교한다(느슨한 디코딩으로 인한 뒤 바이트·비정규 패딩 차단).
+// DEPLOY 에는 쓰지 않는다(ConstructorArgs).
 func (in *Intent) Calldata() ([]byte, error) {
+	if in.Type != TypeTX {
+		return nil, fmt.Errorf("intent: %s 에는 calldata 가 없다", in.Type)
+	}
+	packed, err := in.packArgs()
+	if err != nil {
+		return nil, err
+	}
+	sel := crypto.Keccak256([]byte(in.Function))[:4]
+	return append(sel, packed...), nil
+}
+
+// ConstructorArgs 는 DEPLOY 의 생성자 인자 ABI 인코딩이다. 배포 tx 의 data 는 생성 바이트코드 ‖ 이 값이다.
+func (in *Intent) ConstructorArgs() ([]byte, error) {
+	if in.Type != TypeDeploy {
+		return nil, fmt.Errorf("intent: %s 에는 생성자 인자가 없다", in.Type)
+	}
+	return in.packArgs()
+}
+
+// CodeHashBytes 는 DEPLOY 의 code_hash 다.
+func (in *Intent) CodeHashBytes() common.Hash { return common.HexToHash(in.CodeHash) }
+
+func (in *Intent) packArgs() ([]byte, error) {
 	types, err := functionTypes(in.Function)
 	if err != nil {
 		return nil, err
@@ -220,8 +283,15 @@ func (in *Intent) Calldata() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("intent: ABI 인코딩: %w", err)
 	}
-	sel := crypto.Keccak256([]byte(in.Function))[:4]
-	return append(sel, packed...), nil
+	return packed, nil
+}
+
+func isHash32(v string) bool {
+	if len(v) != 66 || !strings.HasPrefix(v, "0x") || strings.ToLower(v) != v {
+		return false
+	}
+	_, err := hex.DecodeString(v[2:])
+	return err == nil
 }
 
 func isChecksumAddress(s string) bool {

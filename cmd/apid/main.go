@@ -12,11 +12,14 @@ import (
 	"os"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/spf13/cobra"
 
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/alarm"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/audit"
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/ledger/besu"
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/registry"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/server"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/store"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/transport"
@@ -52,6 +55,7 @@ type app struct {
 	cfg    *Config
 	db     *sql.DB
 	eth    *ethclient.Client
+	ledger *besu.Adapter
 	signer *signerClient
 	wf     *workflow.Service
 	alarms *alarm.Recorder
@@ -88,19 +92,26 @@ func serve(ctx context.Context, log *slog.Logger, cfgPath string) error {
 	}
 	a.signer = newSignerClient(transport.NewClient(clientTLS, 30*time.Second), cfg.Signer.URL)
 	gas := cfg.Workflow.GasLimit
-	if gas == 0 {
-		gas = 300000
+	led, err := besu.New(eth, besu.Config{ChainID: cfg.Ledger.ChainID, GasLimit: gas, DeployGasLimit: cfg.Workflow.DeployGasLimit})
+	if err != nil {
+		return err
 	}
+	a.ledger = led
 	interval, err := time.ParseDuration(cfg.Workflow.WorkerInterval)
 	if err != nil || interval <= 0 {
 		interval = time.Second
 	}
-	a.wf = &workflow.Service{DB: db, Dir: a.signer, LedgerID: cfg.Ledger.ID, GasLimit: gas}
-	worker := &workflow.SignWorker{DB: db, LedgerID: cfg.Ledger.ID, Dir: a.signer, Signer: a.signer, Chain: eth, ChainID: cfg.Ledger.ChainID, GasLimit: gas}
+	a.wf = &workflow.Service{DB: db, Dir: a.signer, LedgerID: cfg.Ledger.ID, GasLimit: gas, DeployGasLimit: cfg.Workflow.DeployGasLimit,
+		KnownCode: func(h common.Hash) bool { return h == besu.SecurityTokenCodeHash() }}
+	worker := &workflow.SignWorker{DB: db, LedgerID: cfg.Ledger.ID, Dir: a.signer, Signer: a.signer, Chain: led, Builder: led}
 	a.hookAlarms(log, worker)
 	wctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go worker.Run(wctx, interval, func(msg string, args ...any) { log.Warn(msg, args...) })
+	logw := func(msg string, args ...any) { log.Warn(msg, args...) }
+	go worker.Run(wctx, interval, logw)
+	go (&workflow.SubmitWorker{DB: db, LedgerID: cfg.Ledger.ID, Ledger: led}).Run(wctx, interval, logw)
+	go (&workflow.ReceiptWorker{DB: db, LedgerID: cfg.Ledger.ID, Ledger: led}).Run(wctx, interval, logw)
+	go (&registry.Worker{DB: db, LedgerID: cfg.Ledger.ID, Source: led, ConfirmDepth: cfg.Ledger.ConfirmDepth}).Run(wctx, interval, logw)
 	go a.pushAuditHead(wctx, interval, log)
 
 	tlsCfg, err := transport.ServerTLSConfig(cfg.TLS, cfg.AllowedCallers)
@@ -113,6 +124,8 @@ func serve(ctx context.Context, log *slog.Logger, cfgPath string) error {
 	mux.Handle("POST /v1/requests/{id}/approvals", transport.RequireCaller(ops, http.HandlerFunc(a.addApproval)))
 	mux.Handle("GET /v1/requests", transport.RequireCaller(ops, http.HandlerFunc(a.listRequests)))
 	mux.Handle("GET /v1/alarms", transport.RequireCaller(ops, http.HandlerFunc(a.listAlarms)))
+	mux.Handle("GET /v1/securities", transport.RequireCaller(ops, http.HandlerFunc(a.listSecurities)))
+	mux.Handle("GET /v1/registry-events", transport.RequireCaller(ops, http.HandlerFunc(a.listRegistryEvents)))
 	mux.Handle("GET /v1/requests/{id}", transport.RequireCaller(ops, http.HandlerFunc(a.getRequest)))
 	mux.Handle("GET /healthz", transport.RequireCaller([]string{"stoctl", "apid"}, http.HandlerFunc(a.healthz)))
 	mux.Handle("GET /v1/audit/records", transport.RequireCaller([]string{"stoctl"}, transport.AuditRecordsHandler(db)))

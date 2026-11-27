@@ -29,6 +29,9 @@ func main() {
 		approverCmd(),
 		requestCmd(g),
 		freezeCmd(g),
+		securityCmd(g),
+		registryCmd(g),
+		keyCmd(g),
 	)
 	if err := root.ExecuteContext(context.Background()); err != nil {
 		fmt.Fprintln(os.Stderr, "오류:", err)

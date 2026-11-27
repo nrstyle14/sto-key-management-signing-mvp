@@ -19,6 +19,7 @@ import (
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/keyreg"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/policy"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/server"
+	signerhsm "github.com/da-infra/sto-key-management-signing-mvp/internal/signer/hsm"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/store"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/transport"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/version"
@@ -49,6 +50,7 @@ func main() {
 			return server.Probe(cmd.Context(), cfg.TLS, "localhost", "https://localhost"+cfg.Listen+"/healthz", nil)
 		}},
 		initCmd(log, &cfgPath),
+		rehearseCmd(),
 	)
 	if err := root.ExecuteContext(context.Background()); err != nil {
 		log.Error("실패", "err", err)
@@ -61,6 +63,7 @@ type app struct {
 	log     *slog.Logger
 	db      *sql.DB
 	tokens  map[string]*hsm.Token
+	hsm     *signerhsm.Signer
 	apiHead apiHead
 	cp      *checkpointer
 }
@@ -85,6 +88,11 @@ func serve(ctx context.Context, log *slog.Logger, cfgPath string) error {
 	}
 	defer mod.Close()
 	a := &app{cfg: cfg, log: log, db: db, tokens: toks}
+	list := make([]*hsm.Token, 0, len(toks))
+	for _, t := range toks {
+		list = append(list, t)
+	}
+	a.hsm = signerhsm.New(list, keyreg.TokenLabelOf(db))
 	if err := a.checkRegistry(ctx); err != nil {
 		return fmt.Errorf("기동 점검(키 레지스트리): %w", err)
 	}
@@ -123,6 +131,7 @@ func (a *app) routes() http.Handler {
 	mux.Handle("GET /v1/keys", transport.RequireCaller([]string{"stoctl", "apid"}, http.HandlerFunc(a.listKeys)))
 	mux.Handle("GET /v1/policies", transport.RequireCaller([]string{"stoctl", "apid"}, http.HandlerFunc(a.listPolicies)))
 	mux.Handle("GET /v1/approvers", transport.RequireCaller([]string{"stoctl", "apid"}, http.HandlerFunc(a.listApprovers)))
+	mux.Handle("POST /v1/key-ops", transport.RequireCaller([]string{"stoctl"}, http.HandlerFunc(a.postKeyOp)))
 	registerSignRoutes(a, mux)
 	return mux
 }
@@ -139,7 +148,7 @@ func (a *app) listApprovers(w http.ResponseWriter, r *http.Request) {
 
 // listKeys 는 키 레지스트리의 공개 정보다(개인키·PIN 없음). 동결(freezes)은 여기 반영되지 않고 서명 시 4단계에서 거부된다.
 func (a *app) listKeys(w http.ResponseWriter, r *http.Request) {
-	keys, err := keyreg.ListByStatus(r.Context(), a.db, keyreg.StatusActive, keyreg.StatusFrozen, keyreg.StatusRetired, keyreg.StatusDestroyed)
+	keys, err := keyreg.ListByStatus(r.Context(), a.db, keyreg.StatusPending, keyreg.StatusActive, keyreg.StatusFrozen, keyreg.StatusRetired, keyreg.StatusDestroyed)
 	if err != nil {
 		transport.WriteError(w, http.StatusInternalServerError, transport.CodeInternal, "키 조회 실패")
 		return
@@ -148,7 +157,7 @@ func (a *app) listKeys(w http.ResponseWriter, r *http.Request) {
 	for _, k := range keys {
 		out = append(out, map[string]any{"key_id": k.KeyID, "ledger_id": k.LedgerID, "institution_id": k.InstitutionID,
 			"purpose": string(k.Purpose), "class": string(k.Class), "address": k.Address.Hex(), "status": string(k.Status),
-			"public_key": fmt.Sprintf("%x", []byte(k.PublicKey)), "token": k.TokenLabel})
+			"public_key": fmt.Sprintf("%x", []byte(k.PublicKey)), "token": k.TokenLabel, "rotated_from": k.RotatedFrom})
 	}
 	transport.WriteJSON(w, http.StatusOK, map[string]any{"keys": out})
 }

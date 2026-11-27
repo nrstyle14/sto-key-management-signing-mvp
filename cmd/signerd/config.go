@@ -19,6 +19,7 @@ type Config struct {
 	Ledgers        []LedgerConfig     `yaml:"ledgers"`
 	Signing        SigningConfig      `yaml:"signing"`
 	Freeze         FreezeConfig       `yaml:"freeze"`
+	KeyOps         KeyOpsConfig       `yaml:"key_ops"`
 	Audit          AuditConfig        `yaml:"audit"`
 }
 
@@ -28,6 +29,12 @@ type AuditConfig struct {
 	CheckpointFile     string `yaml:"checkpoint_file"`     // DB 와 다른 위치(별도 볼륨)
 	KeyLedger          string `yaml:"key_ledger"`          // AUDIT 키의 토큰 원장(global)
 	KeyInstitution     string `yaml:"key_institution"`     // AUDIT 키의 토큰 기관(audit)
+}
+
+// KeyOpsConfig 는 키 작업(생성·퇴역·폐기)에 필요한 보안관리자 그룹과 서명 수(M)다(설계서 9절, D-20).
+type KeyOpsConfig struct {
+	AdminGroup string `yaml:"admin_group"`
+	Approvals  int    `yaml:"approvals"`
 }
 
 // FreezeConfig 는 동결 해제에 필요한 보안관리자 그룹과 서명 수(M)다(설계서 7.3, D-5).
@@ -118,6 +125,9 @@ func (c *Config) validate() error {
 	}
 	if c.Freeze.AdminGroup == "" || c.Freeze.ReleaseApprovals < 2 {
 		errs = append(errs, errors.New("freeze.admin_group 과 freeze.release_approvals(2 이상)가 필요하다"))
+	}
+	if c.KeyOps.AdminGroup == "" || c.KeyOps.Approvals < 2 {
+		errs = append(errs, errors.New("key_ops.admin_group 과 key_ops.approvals(2 이상)가 필요하다"))
 	}
 	if c.Audit.KeyLedger == "" || c.Audit.KeyInstitution == "" {
 		errs = append(errs, errors.New("audit.key_ledger, audit.key_institution 이 필요하다"))

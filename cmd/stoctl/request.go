@@ -49,7 +49,9 @@ func requestCmd(g *globals) *cobra.Command {
 		_ = draft.MarkFlagRequired(f)
 	}
 
-	c.AddCommand(draft, decideCmd(g, approval.Approve), decideCmd(g, approval.Reject))
+	draft.Flags().StringVar(&d.Type, "type", "TX", "요청 유형(TX, DEPLOY)")
+	draft.Flags().StringVar(&d.CodeHash, "code-hash", "", "DEPLOY 의 생성 바이트코드 keccak256")
+	c.AddCommand(draft, decideCmd(g, approval.Approve), decideCmd(g, approval.Reject), waitCmd(g))
 
 	show := &cobra.Command{
 		Use: "show <request_id>", Short: "요청을 조회한다", Args: cobra.ExactArgs(1),
@@ -132,9 +134,12 @@ func decide(ctx context.Context, g *globals, id string, d approval.Decision, key
 	if hex.EncodeToString(h[:]) != r.IntentHash {
 		return errors.New("업무 서버가 준 intent_hash 가 intent 에서 다시 계산한 값과 다르다(서명하지 않음)")
 	}
-	fmt.Printf("요청 %s (%s)\n  원장 %s / 기관 %s / 키 용도 %s\n  컨트랙트 %s\n  함수 %s\n  인자 %s\n  기안자 %s, 만료 %s\n  intent_hash %x\n",
-		in.RequestID, r.Status, in.LedgerID, in.InstitutionID, in.KeyPurpose, in.Contract, in.Function,
+	fmt.Printf("요청 %s (%s, %s)\n  원장 %s / 기관 %s / 키 용도 %s\n  컨트랙트 %s\n  함수 %s\n  인자 %s\n  기안자 %s, 만료 %s\n  intent_hash %x\n",
+		in.RequestID, in.Type, r.Status, in.LedgerID, in.InstitutionID, in.KeyPurpose, in.Contract, in.Function,
 		strings.Join(in.Args, ", "), in.DrafterID, in.ExpiresAt, h[:8])
+	if in.Type == intent.TypeDeploy {
+		fmt.Printf("  배포 바이트코드 keccak256 %s\n", in.CodeHash)
+	}
 	approverID, priv, err := loadApproverKey(keyFile, pwFile)
 	if err != nil {
 		return err

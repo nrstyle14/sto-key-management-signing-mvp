@@ -61,7 +61,8 @@ policies:
     ledger_id: besu-local
     institution_id: platform
     key_purpose: CONTRACT_ADMIN
-    body: {allowed_functions: ["grantRole(bytes32,address)", "revokeRole(bytes32,address)", "renounceRole(bytes32,address)"], recipient_whitelist: false, required_approvals: 2, approver_group: platform-security-admins, gas_limit_cap: 500000}
+    # 종목 배포(DEPLOY, D-19)와 역할·기관 대응 관리. 배포 가스(실측 약 150만)를 위해 상한을 300만으로 둔다.
+    body: {allowed_functions: ["constructor(string,string,address)", "grantRole(bytes32,address)", "revokeRole(bytes32,address)", "renounceRole(bytes32,address)", "setAgentInstitution(address,string)"], recipient_whitelist: false, required_approvals: 2, approver_group: platform-security-admins, gas_limit_cap: 3000000}
   - policy_id: pol-platform-emergency
     ledger_id: besu-local
     institution_id: platform

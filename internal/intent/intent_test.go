@@ -112,3 +112,63 @@ func TestCanonicalNoHTMLEscape(t *testing.T) {
 		t.Fatalf("HTML 이스케이프가 들어갔다: %s", c)
 	}
 }
+
+// DEPLOY 테스트 벡터(T3.3, D-19). 기대값은 python3(정규화·SHA-256)와 cast abi-encode 로 따로 계산했다.
+const (
+	deployJSON      = `{"request_id":"01JDQ8Z3V4N6P7R8S9T0W1X2Y3","type":"DEPLOY","ledger_id":"besu-local","institution_id":"platform","key_purpose":"CONTRACT_ADMIN","contract":"0x0000000000000000000000000000000000000000","function":"constructor(string,string,address)","args":["데모 채권 1","KRDEMO000001","0x70997970C51812dc3A010C7d01b50e0d17dc79C8"],"drafter_id":"sec-01","expires_at":"2026-12-01T09:00:00Z","code_hash":"0xabababababababababababababababababababababababababababababababab"}`
+	deployCanonical = `{"args":["데모 채권 1","KRDEMO000001","0x70997970C51812dc3A010C7d01b50e0d17dc79C8"],"code_hash":"0xabababababababababababababababababababababababababababababababab","contract":"0x0000000000000000000000000000000000000000","drafter_id":"sec-01","expires_at":"2026-12-01T09:00:00Z","function":"constructor(string,string,address)","institution_id":"platform","key_purpose":"CONTRACT_ADMIN","ledger_id":"besu-local","request_id":"01JDQ8Z3V4N6P7R8S9T0W1X2Y3","type":"DEPLOY"}`
+	deployHash      = "19703087eac8dab357f94352a3263ab9ae1ec7b5c1ad7bace13d6a006e81b23d"
+	deployArgs      = "000000000000000000000000000000000000000000000000000000000000006000000000000000000000000000000000000000000000000000000000000000a000000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8000000000000000000000000000000000000000000000000000000000000000feb8db0ebaaa820ecb184eab68c20310000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000c4b5244454d4f3030303030310000000000000000000000000000000000000000"
+)
+
+func TestDeployVector(t *testing.T) {
+	in, err := Parse([]byte(deployJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := in.Canonical()
+	if string(c) != deployCanonical {
+		t.Fatalf("정규화 불일치\n got=%s\nwant=%s", c, deployCanonical)
+	}
+	if h, _ := in.Hash(); hex.EncodeToString(h[:]) != deployHash {
+		t.Fatalf("해시 불일치: %x", h)
+	}
+	a, err := in.ConstructorArgs()
+	if err != nil || hex.EncodeToString(a) != deployArgs {
+		t.Fatalf("생성자 인자 %x %v", a, err)
+	}
+	if _, err := in.Calldata(); err == nil {
+		t.Fatal("DEPLOY 에 calldata 가 만들어졌다")
+	}
+	// 정규화 바이트를 다시 해석해도 같은 해시
+	in2, err := Parse(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h1, _ := in.Hash(); func() bool { h2, _ := in2.Hash(); return h1 != h2 }() {
+		t.Fatal("다시 해석한 DEPLOY 의 해시가 다르다")
+	}
+}
+
+func TestDeployRejects(t *testing.T) {
+	tx := vectorJSON
+	cases := map[string]string{
+		"TX 에 code_hash":         strings.Replace(tx, `"expires_at"`, `"code_hash":"0x`+strings.Repeat("ab", 32)+`","expires_at"`, 1),
+		"DEPLOY 에 code_hash 없음":  strings.Replace(deployJSON, `,"code_hash":"0x`+strings.Repeat("ab", 32)+`"`, "", 1),
+		"DEPLOY contract 가 0 아님": strings.Replace(deployJSON, ZeroAddress, "0x5FbDB2315678afecb367f032d93F642f64180aa3", 1),
+		"DEPLOY 함수가 생성자 아님":      strings.Replace(deployJSON, `"constructor(string,string,address)"`, `"init(string,string,address)"`, 1),
+		"code_hash 대문자":          strings.Replace(deployJSON, strings.Repeat("ab", 32), strings.Repeat("AB", 32), 1),
+		"code_hash 길이":           strings.Replace(deployJSON, strings.Repeat("ab", 32), strings.Repeat("ab", 31), 1),
+		"code_hash 중복":           strings.Replace(deployJSON, `"type":"DEPLOY"`, `"code_hash":"0x`+strings.Repeat("ab", 32)+`","type":"DEPLOY"`, 1),
+		"TX 가 0 주소":              strings.Replace(tx, "0x5FbDB2315678afecb367f032d93F642f64180aa3", ZeroAddress, 1),
+		"TX 가 생성자":               strings.Replace(tx, `"issue(address,uint256)"`, `"constructor(address,uint256)"`, 1),
+	}
+	for name, raw := range cases {
+		if raw == tx || raw == deployJSON {
+			t.Fatalf("%s: 변형이 적용되지 않았다", name)
+		}
+		if _, err := Parse([]byte(raw)); err == nil {
+			t.Errorf("%s: 거부되지 않았다", name)
+		}
+	}
+}

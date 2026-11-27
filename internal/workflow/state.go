@@ -30,7 +30,7 @@ var transitions = map[Status][]Status{
 	StatusDraft:           {StatusPendingApproval},
 	StatusPendingApproval: {StatusApproved, StatusRejected, StatusExpired},
 	StatusApproved:        {StatusSigned, StatusFailed, StatusExpired},
-	StatusSigned:          {StatusSubmitted},
+	StatusSigned:          {StatusSubmitted, StatusFailed}, // FAILED: 노드가 영구 거부(T3.2)
 	StatusSubmitted:       {StatusConfirmed, StatusFailed},
 }
 
@@ -58,7 +58,7 @@ func Transition(ctx context.Context, db store.DBTX, requestID string, from, to S
 	}
 	q := "UPDATE requests SET status = ?"
 	args := []any{string(to)}
-	for _, col := range []string{"signer_address", "nonce", "unsigned_tx", "raw_tx", "tx_hash", "error"} {
+	for _, col := range []string{"signer_address", "nonce", "unsigned_tx", "raw_tx", "tx_hash", "submitted_at", "block_number", "contract_address", "error"} {
 		if v, ok := set[col]; ok {
 			q += ", " + col + " = ?"
 			args = append(args, v)

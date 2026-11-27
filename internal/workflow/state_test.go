@@ -6,7 +6,7 @@ func TestTransitions(t *testing.T) {
 	ok := [][2]Status{
 		{StatusDraft, StatusPendingApproval}, {StatusPendingApproval, StatusApproved}, {StatusPendingApproval, StatusRejected},
 		{StatusPendingApproval, StatusExpired}, {StatusApproved, StatusSigned}, {StatusApproved, StatusFailed},
-		{StatusApproved, StatusExpired}, {StatusSigned, StatusSubmitted}, {StatusSubmitted, StatusConfirmed}, {StatusSubmitted, StatusFailed},
+		{StatusApproved, StatusExpired}, {StatusSigned, StatusSubmitted}, {StatusSigned, StatusFailed}, {StatusSubmitted, StatusConfirmed}, {StatusSubmitted, StatusFailed},
 	}
 	for _, p := range ok {
 		if !CanTransition(p[0], p[1]) {

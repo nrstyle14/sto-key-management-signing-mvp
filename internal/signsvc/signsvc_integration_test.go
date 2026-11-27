@@ -506,6 +506,12 @@ func TestRejections(t *testing.T) {
 		svc.Chains = map[string]uint64{}
 		return std(in), &svc
 	})
+	run("업무 서버가 기대한 서명 키가 ACTIVE 키가 아님(교체 뒤 이전 키 주소)", 4, CodeKeyMismatch, func() (Request, *Service) {
+		in := f.issue(t, "1000")
+		req := std(in)
+		req.SignerAddress = stranger.Hex()
+		return req, nil
+	})
 	// 동결은 마지막에(이후 기관 A ISSUE 요청이 모두 막힌다).
 	run("동결된 키", 4, CodeKeyFrozen, func() (Request, *Service) {
 		if _, err := f.db.Exec(`INSERT INTO freezes (freeze_id, scope, target, reason, frozen_by) VALUES (?, 'KEY', ?, 'it', 'it')`,
@@ -536,4 +542,119 @@ func TestRetiredAndDestroyedKeyRejected(t *testing.T) {
 	in = f.issue(t, "1000")
 	_, err = f.svc.SignTx(ctx, "apid", request(t, in, goodTx(t, in, 0), f.ok(in)))
 	wantReject(t, err, 4, CodeKeyNotAvailable)
+}
+
+// 배포 tx(DEPLOY, T3.3·D-19)도 1~9단계를 모두 거친다. 7단계는 to 없음, 생성자 인자, 바이트코드 해시를 대조한다.
+func TestDeploySignAndRejections(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	// 이 시험의 정책(기관 A, ISSUE)에 생성자를 허용한다.
+	body := policy.Body{AllowedFunctions: []string{"issue(address,uint256)", "constructor(string,string,address)"}, MaxAmount: "100000",
+		RecipientWhitelist: true, RequiredApprovals: 2, ApproverGroup: "it-grp-a-" + f.s, GasLimitCap: 300000}
+	b, _ := body.Canonical()
+	if _, err := f.db.Exec(`UPDATE policies SET body_json = ? WHERE policy_id = ?`, string(b), "it-pol-a-"+f.s); err != nil {
+		t.Fatal(err)
+	}
+	code := []byte{0x60, 0x80, 0x60, 0x40, 0x52, 0x34, 0x80, 0x15, 0x60, 0x0f}
+	codeHash := crypto.Keccak256Hash(code)
+	deployIntent := func() *intent.Intent {
+		in := &intent.Intent{
+			RequestID: ulid.Make().String(), Type: intent.TypeDeploy, LedgerID: f.ledger, InstitutionID: f.instA, KeyPurpose: signer.PurposeIssue,
+			Contract: intent.ZeroAddress, Function: "constructor(string,string,address)", Args: []string{"IT Bond", "KRIT0001", f.addrA.Hex()},
+			DrafterID: f.id("it-a1"), ExpiresAt: time.Now().UTC().Add(time.Hour).Format(intent.TimeLayout), CodeHash: codeHash.Hex(),
+		}
+		if err := in.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		return in
+	}
+	b2 := evmtx.Builder{ChainID: chainID, GasLimit: 100000, DeployGasLimit: 200000, Codes: evmtx.CodeSet(code)}
+	build := func(in *intent.Intent) *types.Transaction {
+		raw, err := b2.BuildTx(ctx, in, common.Address{}, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tx, _ := evmtx.DecodeUnsigned(raw)
+		return tx
+	}
+	if _, err := policy.Lookup(ctx, f.db, f.ledger, f.instA, signer.PurposeIssue); err != nil {
+		t.Fatalf("정책 준비: %v", err)
+	}
+
+	in := deployIntent()
+	res, err := f.svc.SignTx(ctx, "apid", request(t, in, build(in), f.ok(in)))
+	if err != nil {
+		t.Fatalf("정상 배포 tx 서명: %v", err)
+	}
+	signed := new(types.Transaction)
+	_ = signed.UnmarshalBinary(common.FromHex(res.SignedTx))
+	if signed.To() != nil || !strings.HasPrefix(common.Bytes2Hex(signed.Data()), common.Bytes2Hex(code)) {
+		t.Fatal("서명된 배포 tx 형식이 다르다")
+	}
+	var payload string
+	_ = f.db.QueryRow(`SELECT payload_json FROM audit_log WHERE action = 'SIGN_TX' AND subject = ?`, in.RequestID).Scan(&payload)
+	if !strings.Contains(payload, codeHash.Hex()) || !strings.Contains(payload, `"type":"DEPLOY"`) {
+		t.Fatalf("배포 서명 감사 기록에 code_hash·type 이 없다: %s", payload)
+	}
+
+	rejects := []struct {
+		name string
+		step int
+		code string
+		req  func() Request
+	}{
+		{"배포 바이트코드 바꿔치기", 7, evmtx.CodeTxCodeHashMismatch, func() Request {
+			in := deployIntent()
+			other := append([]byte{}, code...)
+			other[1] ^= 0xff
+			args, _ := in.ConstructorArgs()
+			tx := types.NewTx(&types.DynamicFeeTx{ChainID: big.NewInt(chainID), GasTipCap: big.NewInt(0), GasFeeCap: big.NewInt(0), Gas: 200000,
+				Value: big.NewInt(0), Data: append(other, args...)})
+			return request(t, in, tx, f.ok(in))
+		}},
+		{"배포 관리자 주소 바꿔치기", 7, evmtx.CodeTxCalldataMismatch, func() Request {
+			in := deployIntent()
+			alt := *in
+			alt.Args = []string{in.Args[0], in.Args[1], stranger.Hex()}
+			return request(t, in, build(&alt), f.ok(in))
+		}},
+		{"배포 intent 에 to 있는 tx", 7, evmtx.CodeTxToMismatch, func() Request {
+			in := deployIntent()
+			tx := build(in)
+			to := contract
+			return request(t, in, types.NewTx(&types.DynamicFeeTx{ChainID: big.NewInt(chainID), GasTipCap: big.NewInt(0), GasFeeCap: big.NewInt(0),
+				Gas: 200000, To: &to, Value: big.NewInt(0), Data: tx.Data()}), f.ok(in))
+		}},
+		{"승인 후 code_hash 변조", 6, approval.CodeInvalidSignature, func() Request {
+			in := deployIntent()
+			approvals := f.ok(in)
+			alt := *in
+			alt.CodeHash = crypto.Keccak256Hash([]byte("other")).Hex()
+			return request(t, &alt, build(in), approvals)
+		}},
+		{"배포 가스 정책 상한 초과", 5, policy.CodeGasLimitExceeded, func() Request {
+			in := deployIntent()
+			big := evmtx.Builder{ChainID: chainID, GasLimit: 100000, DeployGasLimit: 300001, Codes: evmtx.CodeSet(code)}
+			raw, _ := big.BuildTx(ctx, in, common.Address{}, 0)
+			tx, _ := evmtx.DecodeUnsigned(raw)
+			return request(t, in, tx, f.ok(in))
+		}},
+	}
+	for _, c := range rejects {
+		t.Run(c.name, func(t *testing.T) {
+			req := c.req()
+			_, err := f.svc.SignTx(ctx, "apid", req)
+			wantReject(t, err, c.step, c.code)
+			var peek struct {
+				RequestID string `json:"request_id"`
+			}
+			_ = json.Unmarshal(req.Intent, &peek)
+			if f.auditCount(t, "SIGN_REJECTED", peek.RequestID) != 1 {
+				t.Fatal("거부 감사 기록이 1건이 아니다")
+			}
+		})
+	}
+	if c := f.fs.calls.Load(); c != 1 {
+		t.Fatalf("거부 사례에서 HSM 서명이 호출됐다(총 %d 회, 기대 1)", c)
+	}
 }

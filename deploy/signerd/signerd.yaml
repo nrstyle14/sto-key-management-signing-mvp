@@ -40,12 +40,17 @@ hsm:
 ledgers:
   - id: besu-local
     chain_id: 20261124
+# 가스 한도 상한(5.3 의 7단계). 범위별 상한은 정책 gas_limit_cap 이 더 좁힌다. 배포 tx(약 150만) 때문에 300만.
 signing:
-  max_gas_limit: 500000
+  max_gas_limit: 3000000
 # 동결은 보안관리자 1인 서명으로 즉시, 해제는 같은 그룹의 서로 다른 보안관리자 M명 서명(D-5).
 freeze:
   admin_group: platform-security-admins
   release_approvals: 2
+# 키 작업(생성·퇴역·폐기)은 같은 그룹의 서로 다른 보안관리자 M명 서명(설계서 9절, D-20).
+key_ops:
+  admin_group: platform-security-admins
+  approvals: 2
 # 감사 체크포인트: 두 체인(signer, api)의 머리를 AUDIT 키로 서명해 DB 와 별도 볼륨 파일에 남긴다(FR-4.3).
 # api 체인 머리는 업무 서버가 POST /v1/audit/api-head 로 알려 온 값이다.
 audit:

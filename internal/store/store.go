@@ -14,7 +14,7 @@ import (
 
 // 서버가 기대하는 마이그레이션 버전. 마이그레이션을 추가하면 같이 올린다.
 const (
-	APISchemaVersion    = 2
+	APISchemaVersion    = 5
 	SignerSchemaVersion = 3
 )
 

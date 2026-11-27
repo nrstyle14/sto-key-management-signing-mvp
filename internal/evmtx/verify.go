@@ -6,6 +6,7 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/intent"
 )
@@ -20,6 +21,7 @@ const (
 	CodeTxGasLimitExceeded = "TX_GAS_LIMIT_EXCEEDED"
 	CodeTxAccessList       = "TX_ACCESS_LIST_NOT_EMPTY"
 	CodeTxCalldataMismatch = "TX_CALLDATA_MISMATCH"
+	CodeTxCodeHashMismatch = "TX_CODE_HASH_MISMATCH" // 배포 tx 의 생성 바이트코드 해시가 intent 의 code_hash 와 다르다(D-19)
 )
 
 // VerifyError 는 대조 실패다.
@@ -41,10 +43,13 @@ func VerifyTx(in *intent.Intent, tx *types.Transaction, chainID uint64, maxGas u
 	if c := tx.ChainId(); c == nil || !c.IsUint64() || c.Uint64() != chainID {
 		return vErr(CodeTxChainIDMismatch, "chainId %v, 기대 %d", tx.ChainId(), chainID)
 	}
-	if tx.To() == nil {
+	deploy := in.Type == intent.TypeDeploy
+	switch {
+	case deploy && tx.To() != nil:
+		return vErr(CodeTxToMismatch, "배포 intent 인데 to 가 %s 다", tx.To().Hex())
+	case !deploy && tx.To() == nil:
 		return vErr(CodeTxToMismatch, "to 가 없다(컨트랙트 생성)")
-	}
-	if *tx.To() != in.ContractAddress() {
+	case !deploy && *tx.To() != in.ContractAddress():
 		return vErr(CodeTxToMismatch, "to %s, intent contract %s", tx.To().Hex(), in.Contract)
 	}
 	if tx.Value() == nil || tx.Value().Sign() != 0 {
@@ -60,12 +65,32 @@ func VerifyTx(in *intent.Intent, tx *types.Transaction, chainID uint64, maxGas u
 	if len(tx.AccessList()) != 0 {
 		return vErr(CodeTxAccessList, "access list 항목 %d", len(tx.AccessList()))
 	}
+	if deploy {
+		return verifyDeployData(in, tx.Data())
+	}
 	want, err := in.Calldata()
 	if err != nil {
 		return vErr(CodeTxInvalid, "intent calldata: %v", err)
 	}
 	if !bytes.Equal(tx.Data(), want) {
 		return vErr(CodeTxCalldataMismatch, "calldata 가 intent 와 다르다")
+	}
+	return nil
+}
+
+// verifyDeployData 는 배포 tx 의 data 가 "생성 바이트코드 ‖ 생성자 인자"이고,
+// 생성자 인자가 intent 에서 다시 인코딩한 값과 바이트 단위로 같으며, 바이트코드의 keccak256 이 code_hash 인지 확인한다.
+func verifyDeployData(in *intent.Intent, data []byte) error {
+	args, err := in.ConstructorArgs()
+	if err != nil {
+		return vErr(CodeTxInvalid, "intent 생성자 인자: %v", err)
+	}
+	if len(data) <= len(args) || !bytes.Equal(data[len(data)-len(args):], args) {
+		return vErr(CodeTxCalldataMismatch, "배포 data 끝의 생성자 인자가 intent 와 다르다")
+	}
+	code := data[:len(data)-len(args)]
+	if got := crypto.Keccak256Hash(code); got != in.CodeHashBytes() {
+		return vErr(CodeTxCodeHashMismatch, "생성 바이트코드 keccak256 %s, intent code_hash %s", got.Hex(), in.CodeHash)
 	}
 	return nil
 }

@@ -110,6 +110,15 @@ func (s *Signer) PublicKeyOf(ctx context.Context, tokenLabel, keyID string) (sig
 	return signer.PublicKey(pub), nil
 }
 
+// ObjectCount 는 토큰의 keyID 개인키·공개키 객체 수다(폐기 확인용).
+func (s *Signer) ObjectCount(ctx context.Context, tokenLabel, keyID string) (int, error) {
+	t, err := s.token(tokenLabel)
+	if err != nil {
+		return 0, err
+	}
+	return t.ObjectCount(ctx, keyID)
+}
+
 // DestroyIn 은 토큰을 직접 지정해 keyID 키를 삭제한다(레지스트리 등록 전 부트스트랩 롤백용).
 func (s *Signer) DestroyIn(ctx context.Context, tokenLabel, keyID string) error {
 	t, err := s.token(tokenLabel)
@@ -117,4 +126,40 @@ func (s *Signer) DestroyIn(ctx context.Context, tokenLabel, keyID string) error 
 		return err
 	}
 	return t.Destroy(ctx, keyID)
+}
+
+// InjectWrappingKey 는 토큰에 AES-256 래핑 키를 추출 불가 객체로 넣는다(설계서 6.3).
+func (s *Signer) InjectWrappingKey(ctx context.Context, tokenLabel, wrapKeyID string, key []byte) error {
+	t, err := s.token(tokenLabel)
+	if err != nil {
+		return err
+	}
+	return t.InjectWrappingKey(ctx, wrapKeyID, key)
+}
+
+// HasWrappingKey 는 토큰에 래핑 키가 있는지다.
+func (s *Signer) HasWrappingKey(ctx context.Context, tokenLabel, wrapKeyID string) (bool, error) {
+	t, err := s.token(tokenLabel)
+	if err != nil {
+		return false, err
+	}
+	return t.HasWrappingKey(ctx, wrapKeyID)
+}
+
+// WrapPrivateKey 는 루트 키를 래핑한 암호문을 돌려준다.
+func (s *Signer) WrapPrivateKey(ctx context.Context, tokenLabel, wrapKeyID, keyID string) ([]byte, error) {
+	t, err := s.token(tokenLabel)
+	if err != nil {
+		return nil, err
+	}
+	return t.WrapPrivateKey(ctx, wrapKeyID, keyID)
+}
+
+// UnwrapPrivateKey 는 백업 암호문을 토큰에 복원한다(개인키와 공개키 객체).
+func (s *Signer) UnwrapPrivateKey(ctx context.Context, tokenLabel, wrapKeyID, keyID string, wrapped, pub []byte) error {
+	t, err := s.token(tokenLabel)
+	if err != nil {
+		return err
+	}
+	return t.UnwrapPrivateKey(ctx, wrapKeyID, keyID, wrapped, pub)
 }

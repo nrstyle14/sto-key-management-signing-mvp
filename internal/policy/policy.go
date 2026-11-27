@@ -141,6 +141,8 @@ var roles = map[string]Role{
 	"grantRole(bytes32,address)":               {Recipient: -1, Amount: -1},
 	"revokeRole(bytes32,address)":              {Recipient: -1, Amount: -1},
 	"renounceRole(bytes32,address)":            {Recipient: -1, Amount: -1},
+	"setAgentInstitution(address,string)":      {Recipient: -1, Amount: -1},
+	"constructor(string,string,address)":       {Recipient: -1, Amount: -1}, // 종목 배포(D-19)
 }
 
 // RoleOf 는 함수의 인자 역할이다.

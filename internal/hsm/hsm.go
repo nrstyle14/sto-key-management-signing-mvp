@@ -351,6 +351,22 @@ func (t *Token) Destroy(ctx context.Context, keyID string) error {
 	})
 }
 
+// ObjectCount 는 keyID 라벨의 개인키·공개키 객체 수다(폐기 증적: 삭제 뒤 0 이어야 한다).
+func (t *Token) ObjectCount(ctx context.Context, keyID string) (int, error) {
+	n := 0
+	err := t.withSession(ctx, func(sh pkcs11.SessionHandle) error {
+		for _, cls := range []uint{pkcs11.CKO_PRIVATE_KEY, pkcs11.CKO_PUBLIC_KEY} {
+			hs, err := t.find(sh, cls, keyID)
+			if err != nil {
+				return err
+			}
+			n += len(hs)
+		}
+		return nil
+	})
+	return n, err
+}
+
 func (t *Token) find(sh pkcs11.SessionHandle, class uint, label string) ([]pkcs11.ObjectHandle, error) {
 	tpl := []*pkcs11.Attribute{
 		pkcs11.NewAttribute(pkcs11.CKA_CLASS, class),

@@ -22,8 +22,9 @@ type Config struct {
 
 // WorkflowConfig 는 작업자 주기와 미서명 tx 의 가스 한도다.
 type WorkflowConfig struct {
-	WorkerInterval string `yaml:"worker_interval"` // 예: "1s"
-	GasLimit       uint64 `yaml:"gas_limit"`
+	WorkerInterval string `yaml:"worker_interval"`  // 예: "1s"
+	GasLimit       uint64 `yaml:"gas_limit"`        // 함수 호출 tx
+	DeployGasLimit uint64 `yaml:"deploy_gas_limit"` // 종목 배포 tx
 }
 
 // LedgerConfig 는 원장 노드 접속 설정이다.
@@ -31,6 +32,8 @@ type LedgerConfig struct {
 	ID      string `yaml:"id"`
 	RPCURL  string `yaml:"rpc_url"`
 	ChainID uint64 `yaml:"chain_id"`
+	// ConfirmDepth 는 이벤트 수신의 확정 깊이다(QBFT 즉시 확정이라 기본 0, 설계서 10.4).
+	ConfirmDepth uint64 `yaml:"confirm_depth"`
 }
 
 // SignerConfig 는 서명 서버 접속 설정이다.
@@ -66,6 +69,9 @@ func (c *Config) validate() error {
 	}
 	if c.Ledger.ID == "" || c.Ledger.RPCURL == "" || c.Ledger.ChainID == 0 {
 		errs = append(errs, errors.New("ledger.id, ledger.rpc_url, ledger.chain_id 가 필요하다"))
+	}
+	if c.Workflow.GasLimit == 0 || c.Workflow.DeployGasLimit == 0 {
+		errs = append(errs, errors.New("workflow.gas_limit, workflow.deploy_gas_limit 이 필요하다"))
 	}
 	if c.Signer.URL == "" || c.Signer.ServerName == "" {
 		errs = append(errs, errors.New("signer.url, signer.server_name 이 필요하다"))

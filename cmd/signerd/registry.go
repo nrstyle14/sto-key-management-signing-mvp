@@ -88,19 +88,14 @@ func bootstrap(ctx context.Context, log *slog.Logger, cfgPath, file string) erro
 	return nil
 }
 
-// checkRegistry 는 레지스트리의 ACTIVE·FROZEN 키가 설정된 토큰에 실제로 있고 공개키가 같은지 대조한다(설계서 15절).
+// checkRegistry 는 레지스트리의 PENDING·ACTIVE·FROZEN 키가 설정된 토큰에 실제로 있고 공개키가 같은지 대조한다(설계서 15절).
 func (a *app) checkRegistry(ctx context.Context) error {
-	keys, err := keyreg.ListByStatus(ctx, a.db, keyreg.StatusActive, keyreg.StatusFrozen)
+	keys, err := keyreg.ListByStatus(ctx, a.db, keyreg.StatusPending, keyreg.StatusActive, keyreg.StatusFrozen)
 	if err != nil {
 		return err
 	}
-	list := make([]*hsm.Token, 0, len(a.tokens))
-	for _, t := range a.tokens {
-		list = append(list, t)
-	}
-	s := signerhsm.New(list, keyreg.TokenLabelOf(a.db))
 	for _, k := range keys {
-		pub, err := s.PublicKeyOf(ctx, k.TokenLabel, k.KeyID)
+		pub, err := a.hsm.PublicKeyOf(ctx, k.TokenLabel, k.KeyID)
 		if err != nil {
 			return fmt.Errorf("키 %s: %w", k.KeyID, err)
 		}

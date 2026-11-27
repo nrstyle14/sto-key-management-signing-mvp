@@ -41,7 +41,7 @@ func release(t *testing.T, freezeID string, admins ...string) (int, map[string]a
 }
 
 func TestFreezeWhileApidDownAndReleaseNeedsTwo(t *testing.T) {
-	const target = "key-inst-b-transfer-1"
+	target, _ := activeKey(t, "inst-b", "TRANSFER")
 	compose(t, "stop", "apid")
 	var freezeID string
 	t.Cleanup(func() {

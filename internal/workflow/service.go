@@ -65,27 +65,31 @@ const (
 	CodeNotPending       = "REQUEST_NOT_PENDING"
 	CodeDrafterUnknown   = "DRAFTER_UNKNOWN"
 	CodeDirectoryFailure = "SIGNER_DIRECTORY_UNAVAILABLE"
+	CodeUnknownCode      = "DEPLOY_CODE_UNKNOWN"
+	CodeSecurityExists   = "SECURITY_EXISTS"
 )
 
 // Request 는 요청 조회 결과다.
 type Request struct {
-	RequestID     string          `json:"request_id"`
-	Type          string          `json:"type"`
-	LedgerID      string          `json:"ledger_id"`
-	InstitutionID string          `json:"institution_id"`
-	Intent        json.RawMessage `json:"intent"`
-	IntentHash    string          `json:"intent_hash"`
-	Status        Status          `json:"status"`
-	DrafterID     string          `json:"drafter_id"`
-	SignerAddress string          `json:"signer_address,omitempty"`
-	Nonce         *uint64         `json:"nonce,omitempty"`
-	TxHash        string          `json:"tx_hash,omitempty"`
-	RawTx         string          `json:"raw_tx,omitempty"`
-	Error         string          `json:"error,omitempty"`
-	ExpiresAt     time.Time       `json:"expires_at"`
-	CreatedAt     time.Time       `json:"created_at"`
-	UpdatedAt     time.Time       `json:"updated_at"`
-	Approvals     []ApprovalRow   `json:"approvals"`
+	RequestID       string          `json:"request_id"`
+	Type            string          `json:"type"`
+	LedgerID        string          `json:"ledger_id"`
+	InstitutionID   string          `json:"institution_id"`
+	Intent          json.RawMessage `json:"intent"`
+	IntentHash      string          `json:"intent_hash"`
+	Status          Status          `json:"status"`
+	DrafterID       string          `json:"drafter_id"`
+	SignerAddress   string          `json:"signer_address,omitempty"`
+	Nonce           *uint64         `json:"nonce,omitempty"`
+	TxHash          string          `json:"tx_hash,omitempty"`
+	RawTx           string          `json:"raw_tx,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	BlockNumber     *uint64         `json:"block_number,omitempty"`     // 확정 블록(CONFIRMED·확정 후 FAILED)
+	ContractAddress string          `json:"contract_address,omitempty"` // 배포 요청이 만든 컨트랙트
+	ExpiresAt       time.Time       `json:"expires_at"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+	Approvals       []ApprovalRow   `json:"approvals"`
 }
 
 // ApprovalRow 는 저장된 승인·반려다.
@@ -102,7 +106,11 @@ type Service struct {
 	Dir      Directory
 	LedgerID string
 	GasLimit uint64 // 미서명 tx 에 넣을 가스 한도(사전 정책 검사에도 쓴다)
-	Now      func() time.Time
+	// DeployGasLimit 은 배포 요청의 가스 한도다(사전 정책 검사용).
+	DeployGasLimit uint64
+	// KnownCode 는 업무 서버가 배포 tx 를 만들 수 있는 바이트코드인지다(배포 기안의 사전 검사).
+	KnownCode func(codeHash common.Hash) bool
+	Now       func() time.Time
 	// OnHighAmount 는 수량이 정책 한도의 80% 이상인 기안에서 부른다(알람, 설계서 7.4).
 	OnHighAmount func(ctx context.Context, req *Request, p *policy.Policy)
 }
@@ -122,6 +130,7 @@ type DraftInput struct {
 	Contract         string   `json:"contract"`
 	Function         string   `json:"function"`
 	Args             []string `json:"args"`
+	CodeHash         string   `json:"code_hash,omitempty"` // DEPLOY 만(생성 바이트코드 keccak256)
 	DrafterID        string   `json:"drafter_id"`
 	ExpiresInSeconds int      `json:"expires_in_seconds"`
 }
@@ -165,6 +174,7 @@ func (s *Service) Draft(ctx context.Context, d DraftInput) (*Request, error) {
 	in := &intent.Intent{
 		RequestID: ulid.Make().String(), Type: d.Type, LedgerID: s.LedgerID, InstitutionID: d.InstitutionID,
 		KeyPurpose: signer.Purpose(d.KeyPurpose), Contract: d.Contract, Function: d.Function, Args: d.Args, DrafterID: d.DrafterID,
+		CodeHash:  d.CodeHash,
 		ExpiresAt: s.now().Add(time.Duration(d.ExpiresInSeconds) * time.Second).Format(intent.TimeLayout),
 	}
 	if in.Args == nil {
@@ -172,6 +182,21 @@ func (s *Service) Draft(ctx context.Context, d DraftInput) (*Request, error) {
 	}
 	if err := in.Validate(); err != nil {
 		return nil, apiErr(422, signsvc.CodeIntentInvalid, "%v", err)
+	}
+	if in.Type == intent.TypeDeploy {
+		if s.KnownCode == nil || !s.KnownCode(in.CodeHashBytes()) {
+			return nil, apiErr(422, CodeUnknownCode, "code_hash %s 의 바이트코드를 업무 서버가 모른다", in.CodeHash)
+		}
+		if len(in.Args) < 2 {
+			return nil, apiErr(422, signsvc.CodeIntentInvalid, "생성자 인자는 (종목명, 종목 코드, 관리자 주소)다")
+		}
+		var n int
+		if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM securities WHERE issue_code = ?`, in.Args[1]).Scan(&n); err != nil {
+			return nil, err
+		}
+		if n > 0 {
+			return nil, apiErr(409, CodeSecurityExists, "종목 코드 %s 가 이미 있다", in.Args[1])
+		}
 	}
 	apprs, err := s.Dir.Approvers(ctx)
 	if err != nil {
@@ -189,7 +214,11 @@ func (s *Service) Draft(ctx context.Context, d DraftInput) (*Request, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := policy.Evaluate(p, in, s.GasLimit); err != nil {
+	gas := s.GasLimit
+	if in.Type == intent.TypeDeploy {
+		gas = s.DeployGasLimit
+	}
+	if err := policy.Evaluate(p, in, gas); err != nil {
 		var v *policy.Violation
 		if errors.As(err, &v) {
 			return nil, apiErr(422, v.Code, "%s", v.Msg)
@@ -214,7 +243,7 @@ func (s *Service) Draft(ctx context.Context, d DraftInput) (*Request, error) {
 	if _, err := audit.Append(ctx, tx, audit.Entry{Actor: in.DrafterID, Action: "REQUEST_SUBMITTED", Subject: in.RequestID, Payload: map[string]any{
 		"request_id": in.RequestID, "type": in.Type, "ledger_id": in.LedgerID, "institution_id": in.InstitutionID,
 		"purpose": string(in.KeyPurpose), "function": in.Function, "contract": in.Contract, "intent_hash": hex.EncodeToString(h[:]),
-		"policy_id": p.PolicyID, "status": string(StatusPendingApproval),
+		"policy_id": p.PolicyID, "status": string(StatusPendingApproval), "args": in.Args, "code_hash": in.CodeHash,
 	}}); err != nil {
 		return nil, err
 	}
@@ -336,16 +365,21 @@ func (s *Service) AddApproval(ctx context.Context, requestID string, a approval.
 }
 
 const requestCols = `request_id, type, ledger_id, institution_id, intent_json, intent_hash, status, drafter_id,
-	COALESCE(signer_address, ''), nonce, tx_hash, raw_tx, COALESCE(error, ''), expires_at, created_at, updated_at`
+	COALESCE(signer_address, ''), nonce, tx_hash, raw_tx, COALESCE(error, ''), expires_at, created_at, updated_at,
+	block_number, COALESCE(contract_address, '')`
 
 func scanRequest(sc interface{ Scan(...any) error }) (*Request, error) {
 	var r Request
 	var intentJSON, status string
 	var hash, txHash, raw []byte
-	var nonce sql.NullInt64
+	var nonce, block sql.NullInt64
 	if err := sc.Scan(&r.RequestID, &r.Type, &r.LedgerID, &r.InstitutionID, &intentJSON, &hash, &status, &r.DrafterID,
-		&r.SignerAddress, &nonce, &txHash, &raw, &r.Error, &r.ExpiresAt, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		&r.SignerAddress, &nonce, &txHash, &raw, &r.Error, &r.ExpiresAt, &r.CreatedAt, &r.UpdatedAt, &block, &r.ContractAddress); err != nil {
 		return nil, err
+	}
+	if block.Valid {
+		b := uint64(block.Int64)
+		r.BlockNumber = &b
 	}
 	r.Intent, r.IntentHash, r.Status = json.RawMessage(intentJSON), hex.EncodeToString(hash), Status(status)
 	if nonce.Valid {

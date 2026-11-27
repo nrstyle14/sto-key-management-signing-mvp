@@ -26,13 +26,16 @@ import (
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/signsvc"
 )
 
-func keyAddress(t *testing.T, keyID string) common.Address {
+// activeKey 는 (besu-local, 기관, 용도)의 ACTIVE 키 ID 와 주소다. 키 교체 시험(T3.5) 뒤에도 같은 시험이 돌도록
+// 부트스트랩 키 ID 를 고정하지 않고 범위로 찾는다.
+func activeKey(t *testing.T, inst, purpose string) (string, common.Address) {
 	t.Helper()
-	var addr string
-	if err := signerDB(t).QueryRow("SELECT address FROM `keys` WHERE key_id = ? AND status = 'ACTIVE'", keyID).Scan(&addr); err != nil {
-		t.Fatalf("레지스트리에서 %s 조회(make up 부트스트랩 필요): %v", keyID, err)
+	var id, addr string
+	if err := signerDB(t).QueryRow("SELECT k.key_id, k.address FROM `keys` k JOIN hsm_tokens t ON t.token_id = k.token_id "+
+		"WHERE t.ledger_id = 'besu-local' AND t.institution_id = ? AND k.purpose = ? AND k.status = 'ACTIVE'", inst, purpose).Scan(&id, &addr); err != nil {
+		t.Fatalf("레지스트리에서 (%s, %s) ACTIVE 키 조회(make up 부트스트랩 필요): %v", inst, purpose, err)
 	}
-	return common.HexToAddress(addr)
+	return id, common.HexToAddress(addr)
 }
 
 func postSign(t *testing.T, c *http.Client, req signsvc.Request) (int, []byte) {
@@ -74,7 +77,7 @@ func buildReq(t *testing.T, in *intent.Intent, chainID int64, nonce uint64, appr
 func TestSignTxWithApprovalsConfirmedOnBesu(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	addr := keyAddress(t, "key-inst-b-transfer-1")
+	keyID, addr := activeKey(t, "inst-b", "TRANSFER")
 	eth, err := ethclient.DialContext(ctx, besuRPC)
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +111,7 @@ func TestSignTxWithApprovalsConfirmedOnBesu(t *testing.T) {
 	if err := json.Unmarshal(body, &res); err != nil {
 		t.Fatal(err)
 	}
-	if res.Address != addr.Hex() || res.KeyID != "key-inst-b-transfer-1" {
+	if res.Address != addr.Hex() || res.KeyID != keyID {
 		t.Fatalf("응답 키 불일치: %+v", res)
 	}
 	if code2, body2 := postSign(t, apid, req); code2 != 200 || !bytes.Equal(body2, body) {

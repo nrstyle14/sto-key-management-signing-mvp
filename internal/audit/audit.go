@@ -64,7 +64,9 @@ var allowedKeys = map[string]bool{
 	"freeze_id": true, "scope": true, "target": true, "count": true, "keys": true, "tokens": true,
 	"policies": true, "caller": true, "drafter_id": true, "function": true, "contract": true,
 	"chain": true, "seq": true, "head_hash": true, "checkpoint_id": true, "nonce": true, "type": true,
-	"rule": true, "error": true,
+	"rule": true, "error": true, "code_hash": true, "contract_address": true, "block_number": true,
+	"issue_code": true, "args": true, "from_block": true, "to_block": true,
+	"objects_before": true, "objects_after": true, "commitment": true, "ceremony_id": true, "custodians": true,
 }
 
 // ErrPayloadKey 는 허용되지 않은 payload 키다.

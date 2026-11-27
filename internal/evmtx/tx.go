@@ -2,6 +2,7 @@ package evmtx
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"math/big"
@@ -9,6 +10,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/intent"
 )
 
 // 확정한 트랜잭션 유형은 EIP-1559(type 2)이고 수수료 필드는 0이다(D-10).
@@ -25,6 +28,63 @@ func NewUnsigned(chainID *big.Int, nonce uint64, to common.Address, data []byte,
 		Value:     big.NewInt(0),
 		Data:      append([]byte(nil), data...),
 	})
+}
+
+// Builder 는 intent 를 미서명 tx 바이트로 만드는 순수 함수 모음이다(네트워크 접근 없음).
+// 업무 서버의 원장 어댑터(internal/ledger/besu)가 BuildTx 로 쓴다(설계서 10.3, T1.5 의 임시 생성 코드를 옮김).
+type Builder struct {
+	ChainID        uint64
+	GasLimit       uint64 // 함수 호출 tx
+	DeployGasLimit uint64 // 배포 tx
+	// Codes 는 배포할 수 있는 생성 바이트코드다(keccak256 → 바이트코드). 배포 intent 의 code_hash 로 찾는다.
+	Codes map[common.Hash][]byte
+}
+
+// CodeSet 은 바이트코드 목록을 keccak256 으로 찾는 맵으로 만든다.
+func CodeSet(codes ...[]byte) map[common.Hash][]byte {
+	m := map[common.Hash][]byte{}
+	for _, c := range codes {
+		m[crypto.Keccak256Hash(c)] = c
+	}
+	return m
+}
+
+// BuildTx 는 intent 를 가스비 0 인 type 2 미서명 tx 인코딩으로 만든다(D-10). from 은 쓰지 않는다(서명 키가 정한다).
+// DEPLOY 는 to 가 없고 data 가 생성 바이트코드 ‖ 생성자 인자다(D-19).
+func (b Builder) BuildTx(_ context.Context, in *intent.Intent, _ common.Address, nonce uint64) ([]byte, error) {
+	if b.ChainID == 0 || b.GasLimit == 0 {
+		return nil, errors.New("evmtx: chain_id, gas_limit 이 필요하다")
+	}
+	chainID := new(big.Int).SetUint64(b.ChainID)
+	if in.Type == intent.TypeDeploy {
+		code, ok := b.Codes[in.CodeHashBytes()]
+		if !ok {
+			return nil, fmt.Errorf("evmtx: code_hash %s 의 바이트코드를 모른다", in.CodeHash)
+		}
+		args, err := in.ConstructorArgs()
+		if err != nil {
+			return nil, err
+		}
+		if b.DeployGasLimit == 0 {
+			return nil, errors.New("evmtx: deploy_gas_limit 이 필요하다")
+		}
+		data := append(append([]byte(nil), code...), args...)
+		return EncodeUnsigned(types.NewTx(&types.DynamicFeeTx{ChainID: chainID, Nonce: nonce, GasTipCap: big.NewInt(0), GasFeeCap: big.NewInt(0),
+			Gas: b.DeployGasLimit, To: nil, Value: big.NewInt(0), Data: data}))
+	}
+	data, err := in.Calldata()
+	if err != nil {
+		return nil, err
+	}
+	return EncodeUnsigned(NewUnsigned(chainID, nonce, in.ContractAddress(), data, b.GasLimit))
+}
+
+// GasFor 는 intent 유형에 맞는 가스 한도다(사전 정책 검사용).
+func (b Builder) GasFor(in *intent.Intent) uint64 {
+	if in.Type == intent.TypeDeploy {
+		return b.DeployGasLimit
+	}
+	return b.GasLimit
 }
 
 // EncodeUnsigned 는 미서명 트랜잭션의 전송 형식이다: 서명 필드(yParity, r, s)가 0 인 type 2 바이너리 인코딩.

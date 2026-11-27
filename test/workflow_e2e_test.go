@@ -94,14 +94,22 @@ func requestStatus(t *testing.T, id string) workflow.Request {
 
 func waitStatus(t *testing.T, id string, want workflow.Status, timeout time.Duration) workflow.Request {
 	t.Helper()
+	return waitStatusIn(t, id, []workflow.Status{want}, timeout)
+}
+
+// waitStatusIn 은 요청이 wants 중 하나가 될 때까지 기다린다.
+func waitStatusIn(t *testing.T, id string, wants []workflow.Status, timeout time.Duration) workflow.Request {
+	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for {
 		r := requestStatus(t, id)
-		if r.Status == want {
-			return r
+		for _, w := range wants {
+			if r.Status == w {
+				return r
+			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%s 상태 %s (기대 %s, %s 대기)", id, r.Status, want, timeout)
+			t.Fatalf("%s 상태 %s (기대 %v, %s 대기)", id, r.Status, wants, timeout)
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
@@ -125,13 +133,15 @@ func TestRequestWaitsWhileSignerDownThenSigns(t *testing.T) {
 	}
 
 	compose(t, "up", "-d", "--wait", "signerd")
-	done := waitStatus(t, r.RequestID, workflow.StatusSigned, 30*time.Second)
+	// 서명 뒤에는 업무 서버가 곧바로 원장에 제출한다(T3.2 이후). 서명 이후 상태면 된다.
+	done := waitStatusIn(t, r.RequestID, []workflow.Status{workflow.StatusSigned, workflow.StatusSubmitted, workflow.StatusConfirmed}, 30*time.Second)
 	signed := new(types.Transaction)
 	if err := signed.UnmarshalBinary(common.FromHex(done.RawTx)); err != nil {
 		t.Fatal(err)
 	}
 	from, err := types.Sender(types.LatestSignerForChainID(signed.ChainId()), signed)
-	if err != nil || from != keyAddress(t, "key-inst-a-issue-1") || done.Nonce == nil || *done.Nonce != signed.Nonce() {
+	_, issueAddr := activeKey(t, "inst-a", "ISSUE")
+	if err != nil || from != issueAddr || done.Nonce == nil || *done.Nonce != signed.Nonce() {
 		t.Fatalf("서명된 tx: from=%s nonce=%v err=%v", from, done.Nonce, err)
 	}
 	t.Log(fmt.Sprintf("서명 서버 복구 후 SIGNED: request=%s tx=%s nonce=%d", done.RequestID, done.TxHash, *done.Nonce))

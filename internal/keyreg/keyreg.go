@@ -22,14 +22,19 @@ type Status string
 
 // 키 상태
 const (
+	// StatusPending 은 교체용으로 만들었지만 아직 서명에 쓰지 않는 키다(T3.5, D-20).
+	// 이전 키를 퇴역시키는 같은 트랜잭션에서 ACTIVE 가 된다. 범위당 ACTIVE 키는 계속 하나다.
+	StatusPending   Status = "PENDING"
 	StatusActive    Status = "ACTIVE"
 	StatusFrozen    Status = "FROZEN"
 	StatusRetired   Status = "RETIRED"
 	StatusDestroyed Status = "DESTROYED"
 )
 
-// 허용되는 상태 전이: ACTIVE → FROZEN ↔ ACTIVE, ACTIVE → RETIRED → DESTROYED
+// 허용되는 상태 전이: PENDING → ACTIVE, ACTIVE → FROZEN ↔ ACTIVE, ACTIVE → RETIRED → DESTROYED,
+// PENDING → RETIRED(교체 취소). RETIRED·DESTROYED 에서 다시 쓰는 전이는 없다.
 var transitions = map[Status][]Status{
+	StatusPending: {StatusActive, StatusRetired},
 	StatusActive:  {StatusFrozen, StatusRetired},
 	StatusFrozen:  {StatusActive},
 	StatusRetired: {StatusDestroyed},
@@ -70,6 +75,8 @@ type Key struct {
 	Status        Status
 	RotatedFrom   string
 	CreatedAt     time.Time
+	RetiredAt     *time.Time
+	DestroyedAt   *time.Time
 }
 
 // RegisterToken 은 토큰을 등록한다.
@@ -88,8 +95,15 @@ func RegisterToken(ctx context.Context, db store.DBTX, t Token) error {
 	return nil
 }
 
-// RegisterKey 는 키를 ACTIVE 로 등록한다. 부류는 용도로 정해지고(D-3), 주소는 공개키에서 다시 계산해 대조한다.
+// RegisterKey 는 키를 등록한다(상태를 비우면 ACTIVE, 교체용은 PENDING 만 허용).
+// 부류는 용도로 정해지고(D-3), 주소는 공개키에서 다시 계산해 대조한다.
 func RegisterKey(ctx context.Context, db store.DBTX, k Key) error {
+	if k.Status == "" {
+		k.Status = StatusActive
+	}
+	if k.Status != StatusActive && k.Status != StatusPending {
+		return fmt.Errorf("keyreg: 등록 상태는 ACTIVE 또는 PENDING 이다(%s)", k.Status)
+	}
 	if k.KeyID == "" || k.TokenID == "" {
 		return errors.New("keyreg: key_id, token_id 가 필요하다")
 	}
@@ -115,8 +129,8 @@ func RegisterKey(ctx context.Context, db store.DBTX, k Key) error {
 		rotated = k.RotatedFrom
 	}
 	_, err = db.ExecContext(ctx, `INSERT INTO `+"`keys`"+` (key_id, token_id, purpose, class, public_key, address, status, rotated_from)
-		VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', ?)`,
-		k.KeyID, k.TokenID, string(k.Purpose), string(k.Class), []byte(k.PublicKey), addr.Hex(), rotated)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		k.KeyID, k.TokenID, string(k.Purpose), string(k.Class), []byte(k.PublicKey), addr.Hex(), string(k.Status), rotated)
 	if err != nil {
 		return fmt.Errorf("keyreg: 키 등록(%s): %w", k.KeyID, err)
 	}
@@ -124,7 +138,7 @@ func RegisterKey(ctx context.Context, db store.DBTX, k Key) error {
 }
 
 const keySelect = `SELECT k.key_id, k.token_id, t.label, t.ledger_id, t.institution_id, k.purpose, k.class,
-	k.public_key, k.address, k.status, COALESCE(k.rotated_from, ''), k.created_at
+	k.public_key, k.address, k.status, COALESCE(k.rotated_from, ''), k.created_at, k.retired_at, k.destroyed_at
 	FROM ` + "`keys`" + ` k JOIN hsm_tokens t ON t.token_id = k.token_id `
 
 func scanKeys(rows *sql.Rows) ([]Key, error) {
@@ -134,9 +148,18 @@ func scanKeys(rows *sql.Rows) ([]Key, error) {
 		var k Key
 		var purpose, class, addr, status string
 		var pub []byte
+		var retired, destroyed sql.NullTime
 		if err := rows.Scan(&k.KeyID, &k.TokenID, &k.TokenLabel, &k.LedgerID, &k.InstitutionID, &purpose, &class,
-			&pub, &addr, &status, &k.RotatedFrom, &k.CreatedAt); err != nil {
+			&pub, &addr, &status, &k.RotatedFrom, &k.CreatedAt, &retired, &destroyed); err != nil {
 			return nil, err
+		}
+		if retired.Valid {
+			t := retired.Time.UTC()
+			k.RetiredAt = &t
+		}
+		if destroyed.Valid {
+			t := destroyed.Time.UTC()
+			k.DestroyedAt = &t
 		}
 		k.Purpose, k.Class, k.Status = signer.Purpose(purpose), signer.Class(class), Status(status)
 		k.PublicKey = signer.PublicKey(pub)
@@ -203,6 +226,20 @@ func ListByStatus(ctx context.Context, db store.DBTX, statuses ...Status) ([]Key
 		return nil, fmt.Errorf("keyreg: 키 목록: %w", err)
 	}
 	return scanKeys(rows)
+}
+
+// TokenFor 는 (원장, 기관)의 ACTIVE 토큰이다(키 생성용).
+func TokenFor(ctx context.Context, db store.DBTX, ledgerID, institutionID string) (*Token, error) {
+	var t Token
+	err := db.QueryRowContext(ctx, `SELECT token_id, label, ledger_id, institution_id, status FROM hsm_tokens
+		WHERE ledger_id = ? AND institution_id = ? AND status = 'ACTIVE'`, ledgerID, institutionID).Scan(&t.TokenID, &t.Label, &t.LedgerID, &t.InstitutionID, &t.Status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("keyreg: (%s, %s) 의 ACTIVE 토큰이 없다", ledgerID, institutionID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
 // TokenLabelOf 는 key_id 가 든 토큰 라벨이다(signer/hsm 의 Resolver).
