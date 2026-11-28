@@ -32,16 +32,23 @@ const fabricCC = "sto-channel/sectoken"
 // fabricAdmin 은 도구 컨테이너에서 InstAMSP 관리자 신원으로 peer 명령을 실행한다.
 func fabricAdmin(t *testing.T, args ...string) string {
 	t.Helper()
+	out, err := fabricAdminTry(t, args...)
+	if err != nil {
+		t.Fatalf("peer %v: %v\n%s", args, err, out)
+	}
+	return out
+}
+
+// fabricAdminTry 는 fabricAdmin 과 같고 실패를 돌려준다.
+func fabricAdminTry(t *testing.T, args ...string) (string, error) {
+	t.Helper()
 	org := "/w/generated/crypto-config/peerOrganizations/insta.example.com"
 	base := []string{"compose", "-f", filepath.Join(repoRoot(t), "deploy", "docker-compose.yml"), "--profile", "fabric", "exec", "-T",
 		"-e", "CORE_PEER_LOCALMSPID=InstAMSP", "-e", "CORE_PEER_MSPCONFIGPATH=" + org + "/users/Admin@insta.example.com/msp",
 		"-e", "CORE_PEER_ADDRESS=peer0.insta.example.com:7051", "-e", "CORE_PEER_TLS_ENABLED=true",
 		"-e", "CORE_PEER_TLS_ROOTCERT_FILE=" + org + "/peers/peer0.insta.example.com/tls/ca.crt", "fabric-tools"}
 	out, err := exec.Command("docker", append(base, args...)...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("peer %v: %v\n%s", args, err, out)
-	}
-	return string(out)
+	return string(out), err
 }
 
 // fabricState 는 기관 A TRANSFER 의 Fabric ACTIVE 키와 그 신원 상태다.
@@ -228,6 +235,22 @@ func TestFabricIdentityLifecycle(t *testing.T) {
 		t.Fatalf("원장 기록 %q %v", q, err)
 	}
 	t.Logf("② 확정: 요청 %s, 원장 기록 등록 신원 %s(%s), tx %s", r.RequestID, rec.Agent, rec.MSPID, rec.TxID)
+
+	// ②-1 서명 서버를 거치지 않은 파일 신원(cryptogen 기관 관리자)의 직접 호출은 체인코드가 거부한다(D-26 ⑥).
+	bypass := randAcct()
+	org := "/w/generated/crypto-config"
+	bout, err := fabricAdminTry(t, "peer", "chaincode", "invoke", "-o", "orderer.example.com:7050", "--tls",
+		"--cafile", org+"/ordererOrganizations/example.com/orderers/orderer.example.com/tls/ca.crt", "-C", "sto-channel", "-n", "sectoken",
+		"--peerAddresses", "peer0.insta.example.com:7051",
+		"--tlsRootCertFiles", org+"/peerOrganizations/insta.example.com/peers/peer0.insta.example.com/tls/ca.crt",
+		"--waitForEvent", "-c", `{"Args":["RegisterAccount","`+bypass+`"]}`)
+	if err == nil || !strings.Contains(bout, "sto.role") {
+		t.Fatalf("관리자 파일 신원의 직접 호출이 거부되지 않았다: %v\n%s", err, bout)
+	}
+	if out, err := fabricAdminTry(t, "peer", "chaincode", "query", "-C", "sto-channel", "-n", "sectoken", "-c", `{"Args":["GetAccount","`+bypass+`"]}`); err == nil {
+		t.Fatalf("거부된 호출의 계좌가 원장에 있다: %s", out)
+	}
+	t.Logf("②-1 관리자 파일 신원 직접 호출 거부")
 
 	// ③ 재발급
 	out := stoctlRun(t, stoctl, append([]string{"fabric", "reenroll", "--key", k1}, sec...)...)

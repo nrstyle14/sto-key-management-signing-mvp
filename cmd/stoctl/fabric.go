@@ -139,7 +139,9 @@ func (g *globals) enrollKey(cmd *cobra.Command, o *fabricOpts, keyID, enrollment
 	secretB := make([]byte, 16)
 	_, _ = rand.Read(secretB)
 	secret := hex.EncodeToString(secretB) // 일회용 등록 비밀(출력하지 않는다)
-	body, _ := json.Marshal(map[string]any{"id": enrollmentID, "type": "client", "secret": secret, "affiliation": "", "max_enrollments": -1})
+	body, _ := json.Marshal(map[string]any{"id": enrollmentID, "type": "client", "secret": secret, "affiliation": "", "max_enrollments": -1,
+		// 체인코드가 갱신 함수에서 확인하는 속성(D-26 ⑥). 인증서에 넣는다(ecert). 파일 신원(cryptogen)에는 없다.
+		"attrs": []map[string]any{{"name": "sto.role", "value": "agent", "ecert": true}}})
 	if _, err := ca.Do("POST", "/api/v1/register", body, fabricca.SoftwareToken(rk, rc)); err != nil {
 		return "", err
 	}

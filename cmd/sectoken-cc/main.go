@@ -2,6 +2,8 @@
 // 완료 기준에 필요한 함수만 둔다(Besu 컨트랙트와 같은 기능을 옮기지 않는다):
 //
 //	RegisterAccount(acct): 호출자 MSP 와 인증서 주체(CN)를 계좌 기록으로 남기고 이벤트 AccountRegistered 를 낸다.
+//	                       호출자 인증서에 CA 속성 sto.role=agent 가 있어야 한다(stoctl fabric enroll 이 붙인 HSM 신원만).
+//	                       cryptogen 파일 신원(기관 관리자·peer)은 서명 서버를 거치지 않으므로 거부한다(D-26 ⑥).
 //	GetAccount(acct):      기록을 돌려준다.
 package main
 
@@ -14,11 +16,15 @@ import (
 	"os"
 	"regexp"
 
+	"github.com/hyperledger/fabric-chaincode-go/v2/pkg/cid"
 	"github.com/hyperledger/fabric-chaincode-go/v2/shim"
 	"github.com/hyperledger/fabric-protos-go-apiv2/msp"
 	"github.com/hyperledger/fabric-protos-go-apiv2/peer"
 	"google.golang.org/protobuf/proto"
 )
+
+// agentAttr 는 원장을 바꾸는 함수를 부를 수 있는 신원의 CA 속성이다(stoctl fabric enroll 이 등록 때 붙인다).
+const agentAttr = "sto.role"
 
 var acctRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
@@ -62,6 +68,9 @@ func (cc) Invoke(stub shim.ChaincodeStubInterface) *peer.Response {
 	key := "acct:" + args[0]
 	switch fn {
 	case "RegisterAccount":
+		if err := cid.AssertAttributeValue(stub, agentAttr, "agent"); err != nil {
+			return shim.Error("호출자 신원에 " + agentAttr + "=agent 속성이 없다(서명 서버를 거친 HSM 신원만 원장을 바꾼다)")
+		}
 		if v, _ := stub.GetState(key); v != nil {
 			return shim.Error(fmt.Sprintf("계좌 %s 는 이미 등록됐다", args[0]))
 		}
