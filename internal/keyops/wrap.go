@@ -105,6 +105,9 @@ func (e *Executor) restore(ctx context.Context, r Request, admins []string) (*Re
 	if k.Status == keyreg.StatusRetired || k.Status == keyreg.StatusDestroyed {
 		return nil, fail(CodeKeyState, "키 %s 는 %s 다(복원하지 않는다)", k.KeyID, k.Status)
 	}
+	if k.Backend == signer.BackendMPC {
+		return nil, fail(CodeKeyState, "키 %s 는 MPC 키다(백업·복원은 HSM 키만, D-25)", k.KeyID)
+	}
 	if k.Address != common.HexToAddress(f.Address) || hex.EncodeToString(k.PublicKey) != f.PublicKey {
 		return nil, fail(CodeBackup, "백업 파일의 공개키가 레지스트리와 다르다")
 	}

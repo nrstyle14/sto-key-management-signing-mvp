@@ -35,7 +35,7 @@ BK="deploy/backups/${DAY}-$(basename "$SHARES")"
 backup_args=()
 declare -a want_addr
 for purpose in CONTRACT_ADMIN EMERGENCY; do
-  line="$(awk -v p="$purpose" '$3=="platform" && $4==p && $5=="ACTIVE"' <<<"$keys")"
+  line="$(awk -v p="$purpose" '$2=="besu-local" && $3=="platform" && $4==p && $5=="ACTIVE"' <<<"$keys")"
   [ "$(wc -l <<<"$line" | tr -d ' ')" = 1 ] && [ -n "$line" ] || { echo "플랫폼 $purpose ACTIVE 키가 하나가 아니다" >&2; exit 1; }
   kid="$(awk '{print $1}' <<<"$line")"
   addr="$(awk '{print $6}' <<<"$line")"

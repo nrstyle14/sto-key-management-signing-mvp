@@ -62,7 +62,7 @@ DEMO_CODE="KRIR$(date -u +%H%M%S)"
 out="$(./scripts/bootstrap-security.sh "$DEMO_CODE" "도난 대응 시연 $DEMO_CODE")"
 DEMO="$(sed -n 's/^CONTRACT=//p' <<<"$out")"
 ./scripts/flow-issue-transfer.sh "$DEMO" 1000 100 >/dev/null
-OLD_LINE="$("$STOCTL" key list | awk -v i="$INST" -v p="$PURPOSE" '$3==i && $4==p && $5=="ACTIVE"')"
+OLD_LINE="$("$STOCTL" key list | awk -v i="$INST" -v p="$PURPOSE" '$2=="besu-local" && $3==i && $4==p && $5=="ACTIVE"')"
 OLD="$(awk '{print $1}' <<<"$OLD_LINE")"
 OLD_ADDR="$(awk '{print $6}' <<<"$OLD_LINE")"
 [ -n "$OLD" ] || { echo "$TARGET ACTIVE 키가 없다" >&2; exit 1; }

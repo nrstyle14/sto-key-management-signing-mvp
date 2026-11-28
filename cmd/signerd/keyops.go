@@ -19,7 +19,7 @@ func (a *app) postKeyOp(w http.ResponseWriter, r *http.Request) {
 		transport.WriteError(w, http.StatusBadRequest, transport.CodeBadRequest, "요청 본문: "+err.Error())
 		return
 	}
-	ex := &keyops.Executor{DB: a.db, HSM: a.hsm, Wrap: a.hsm, AdminGroup: a.cfg.KeyOps.AdminGroup, Approvals: a.cfg.KeyOps.Approvals}
+	ex := &keyops.Executor{DB: a.db, HSM: a.router, Wrap: a.hsm, CurveOf: a.curveOf, Fabric: a.fabricConfig(), AdminGroup: a.cfg.KeyOps.AdminGroup, Approvals: a.cfg.KeyOps.Approvals}
 	res, err := ex.Execute(r.Context(), req, transport.Caller(r.Context()), time.Now().UTC())
 	if err != nil {
 		var ke *keyops.Error

@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -19,7 +20,9 @@ import (
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/keyreg"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/policy"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/server"
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/signer"
 	signerhsm "github.com/da-infra/sto-key-management-signing-mvp/internal/signer/hsm"
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/signer/router"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/store"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/transport"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/version"
@@ -59,13 +62,16 @@ func main() {
 }
 
 type app struct {
-	cfg     *Config
-	log     *slog.Logger
-	db      *sql.DB
-	tokens  map[string]*hsm.Token
-	hsm     *signerhsm.Signer
-	apiHead apiHead
-	cp      *checkpointer
+	cfg    *Config
+	log    *slog.Logger
+	db     *sql.DB
+	tokens map[string]*hsm.Token
+	hsm    *signerhsm.Signer
+	router *router.Router
+	// fabricRoots 는 Fabric 원장별 MSP 루트 CA 다(D-26).
+	fabricRoots map[string][]*x509.Certificate
+	apiHead     apiHead
+	cp          *checkpointer
 }
 
 // serve 는 기동 점검(설정 → DB·마이그레이션 → HSM 토큰 로그인 → 레지스트리 키 대조)을 통과해야만 띄운다(설계서 15절).
@@ -93,6 +99,12 @@ func serve(ctx context.Context, log *slog.Logger, cfgPath string) error {
 		list = append(list, t)
 	}
 	a.hsm = signerhsm.New(list, keyreg.TokenLabelOf(db))
+	if err := a.loadFabricRoots(); err != nil {
+		return fmt.Errorf("기동 점검(Fabric 설정): %w", err)
+	}
+	if a.router, err = a.newRouter(); err != nil {
+		return fmt.Errorf("기동 점검(MPC 설정): %w", err)
+	}
 	if err := a.checkRegistry(ctx); err != nil {
 		return fmt.Errorf("기동 점검(키 레지스트리): %w", err)
 	}
@@ -132,6 +144,7 @@ func (a *app) routes() http.Handler {
 	mux.Handle("GET /v1/policies", transport.RequireCaller([]string{"stoctl", "apid"}, http.HandlerFunc(a.listPolicies)))
 	mux.Handle("GET /v1/approvers", transport.RequireCaller([]string{"stoctl", "apid"}, http.HandlerFunc(a.listApprovers)))
 	mux.Handle("POST /v1/key-ops", transport.RequireCaller([]string{"stoctl"}, http.HandlerFunc(a.postKeyOp)))
+	mux.Handle("GET /v1/fabric/identities", transport.RequireCaller([]string{"stoctl", "apid"}, http.HandlerFunc(a.listFabricIdentities)))
 	mux.Handle("POST /v1/policy-changes", transport.RequireCaller([]string{"stoctl"}, http.HandlerFunc(a.postPolicyChange)))
 	registerSignRoutes(a, mux)
 	return mux
@@ -156,9 +169,14 @@ func (a *app) listKeys(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]map[string]any, 0, len(keys))
 	for _, k := range keys {
+		addr := k.Address.Hex()
+		if k.Curve == signer.CurveP256 {
+			addr = "-" // Fabric 신원 키는 주소가 없다(D-26)
+		}
 		out = append(out, map[string]any{"key_id": k.KeyID, "ledger_id": k.LedgerID, "institution_id": k.InstitutionID,
-			"purpose": string(k.Purpose), "class": string(k.Class), "address": k.Address.Hex(), "status": string(k.Status),
-			"public_key": fmt.Sprintf("%x", []byte(k.PublicKey)), "token": k.TokenLabel, "rotated_from": k.RotatedFrom})
+			"purpose": string(k.Purpose), "class": string(k.Class), "address": addr, "status": string(k.Status),
+			"public_key": fmt.Sprintf("%x", []byte(k.PublicKey)), "token": k.TokenLabel, "rotated_from": k.RotatedFrom, "backend": string(k.Backend),
+			"curve": string(k.Curve)})
 	}
 	transport.WriteJSON(w, http.StatusOK, map[string]any{"keys": out})
 }

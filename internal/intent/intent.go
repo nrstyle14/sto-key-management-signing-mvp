@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
@@ -29,6 +30,8 @@ const (
 	// TypeDeploy 는 컨트랙트 배포다(T3.3, D-19). contract 는 0 주소, function 은 "constructor(…)",
 	// args 는 생성자 인자, code_hash 는 생성 바이트코드의 keccak256 이다.
 	TypeDeploy = "DEPLOY"
+	// TypeFabricTX 는 Fabric 체인코드 호출이다(D-26): contract = "<채널>/<체인코드>", function = 체인코드 함수 이름, args = 문자열.
+	TypeFabricTX = "FABRIC_TX"
 )
 
 // ZeroAddress 는 배포 intent 의 contract 값이다.
@@ -149,6 +152,8 @@ func (in *Intent) Validate() error {
 		if in.CodeHash != "" {
 			return bad("code_hash", "TX 에는 쓸 수 없다")
 		}
+	case TypeFabricTX:
+		return in.validateFabric()
 	case TypeDeploy:
 		if !isHash32(in.CodeHash) {
 			return bad("code_hash", "0x 와 소문자 16진수 64자여야 한다")
@@ -193,6 +198,51 @@ func (in *Intent) Validate() error {
 		return bad("expires_at", "%s 형식(UTC)이어야 한다", TimeLayout)
 	}
 	return nil
+}
+
+var (
+	fabricContractRe = regexp.MustCompile(`^[a-z][a-z0-9.-]{0,63}/[A-Za-z0-9_.-]{1,64}$`)
+	fabricFunctionRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
+)
+
+// validateFabric 은 FABRIC_TX 형식이다(EVM 주소·ABI 검사 대신).
+func (in *Intent) validateFabric() error {
+	if in.CodeHash != "" {
+		return bad("code_hash", "FABRIC_TX 에는 쓸 수 없다")
+	}
+	for f, v := range map[string]string{"ledger_id": in.LedgerID, "institution_id": in.InstitutionID, "drafter_id": in.DrafterID} {
+		if !idRe.MatchString(v) {
+			return bad(f, "소문자·숫자·._- 로 된 1~64자여야 한다")
+		}
+	}
+	if _, err := signer.ClassOf(in.KeyPurpose); err != nil {
+		return bad("key_purpose", "알 수 없는 용도 %q", in.KeyPurpose)
+	}
+	if !fabricContractRe.MatchString(in.Contract) {
+		return bad("contract", "<채널>/<체인코드> 형식이어야 한다")
+	}
+	if !fabricFunctionRe.MatchString(in.Function) {
+		return bad("function", "체인코드 함수 이름 형식")
+	}
+	if len(in.Args) > 16 {
+		return bad("args", "인자는 16개 이하다")
+	}
+	for i, a := range in.Args {
+		if len(a) > 1024 || !utf8.ValidString(a) {
+			return bad(fmt.Sprintf("args[%d]", i), "1024바이트 이하 UTF-8 이어야 한다")
+		}
+	}
+	ts, err := time.Parse(TimeLayout, in.ExpiresAt)
+	if err != nil || ts.UTC().Format(TimeLayout) != in.ExpiresAt {
+		return bad("expires_at", "%s 형식(UTC)이어야 한다", TimeLayout)
+	}
+	return nil
+}
+
+// FabricTarget 은 FABRIC_TX 의 채널과 체인코드다.
+func (in *Intent) FabricTarget() (channel, chaincode string) {
+	channel, chaincode, _ = strings.Cut(in.Contract, "/")
+	return channel, chaincode
 }
 
 // Expires 는 만료 시각이다(Validate 를 통과한 intent 에서만 쓴다).

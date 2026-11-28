@@ -44,11 +44,45 @@ func ClassOf(p Purpose) (Class, error) {
 // Extractable 은 부류가 래핑 내보내기를 허용하는지 돌려준다.
 func (c Class) Extractable() bool { return c == ClassRoot }
 
+// Backend 는 키를 만들고 서명하는 서명기 종류다(D-25).
+type Backend string
+
+// 서명기 종류
+const (
+	BackendHSM Backend = "HSM" // PKCS#11 HSM(기본)
+	BackendMPC Backend = "MPC" // 2-of-3 임계값 ECDSA(mpcd 노드 3개, 운영 키만)
+)
+
+// CheckBackend 는 용도에 쓸 수 있는 서명기인지 확인한다. MPC 는 운영 키(ISSUE, TRANSFER)만 쓴다.
+func CheckBackend(b Backend, p Purpose) error {
+	switch b {
+	case BackendHSM:
+		return nil
+	case BackendMPC:
+		if c, err := ClassOf(p); err != nil || c != ClassOperational {
+			return fmt.Errorf("signer: MPC 서명기는 운영 키(ISSUE, TRANSFER)에만 쓴다(%s)", p)
+		}
+		return nil
+	}
+	return fmt.Errorf("signer: 알 수 없는 서명기 %q", b)
+}
+
+// Curve 는 키 곡선이다(D-26). EVM 원장은 secp256k1, Fabric 신원은 P-256 이다.
+type Curve string
+
+// 키 곡선
+const (
+	CurveSecp256k1 Curve = "SECP256K1"
+	CurveP256      Curve = "P256"
+)
+
 // KeySpec 은 만들 키의 명세다.
 type KeySpec struct {
 	KeyID      string
 	TokenLabel string
 	Purpose    Purpose
+	Backend    Backend // 비우면 HSM
+	Curve      Curve   // 비우면 secp256k1. P-256 은 HSM 만(Fabric 신원)
 }
 
 // PublicKey 는 65바이트 비압축 secp256k1 공개키(0x04 || X || Y)다.

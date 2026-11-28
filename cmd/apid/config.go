@@ -21,6 +21,15 @@ type Config struct {
 	Signer         SignerConfig       `yaml:"signer"`
 	Workflow       WorkflowConfig     `yaml:"workflow"`
 	Recon          ReconConfig        `yaml:"recon"`
+	Fabric         FabricConfig       `yaml:"fabric"`
+}
+
+// FabricConfig 는 Fabric 원장 설정이다(설계서 10.5, D-26). ledger_id 가 비거나 peer TLS CA 파일이 없으면 Fabric 작업자를 끈다.
+type FabricConfig struct {
+	LedgerID    string `yaml:"ledger_id"`
+	PeerAddress string `yaml:"peer_address"`
+	ServerName  string `yaml:"server_name"`
+	TLSCAFile   string `yaml:"tls_ca_file"`
 }
 
 // ReconConfig 는 대사 배치 설정이다(설계서 11절, FR-7.2).

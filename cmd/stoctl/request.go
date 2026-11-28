@@ -40,7 +40,7 @@ func requestCmd(g *globals) *cobra.Command {
 	}
 	draft.Flags().StringVar(&d.InstitutionID, "institution", "", "기관 ID")
 	draft.Flags().StringVar(&d.KeyPurpose, "purpose", "", "키 용도(ISSUE, TRANSFER, CONTRACT_ADMIN, EMERGENCY)")
-	draft.Flags().StringVar(&d.Contract, "contract", "", "컨트랙트 주소(EIP-55)")
+	draft.Flags().StringVar(&d.Contract, "contract", "", "컨트랙트 주소(EIP-55). FABRIC_TX 는 <채널>/<체인코드>")
 	draft.Flags().StringVar(&d.Function, "function", "", `함수 서명(예: "issue(address,uint256)")`)
 	draft.Flags().StringVar(&args, "args", "", "인자(쉼표로 구분)")
 	draft.Flags().StringVar(&d.DrafterID, "drafter", "", "기안자 ID")
@@ -49,7 +49,7 @@ func requestCmd(g *globals) *cobra.Command {
 		_ = draft.MarkFlagRequired(f)
 	}
 
-	draft.Flags().StringVar(&d.Type, "type", "TX", "요청 유형(TX, DEPLOY)")
+	draft.Flags().StringVar(&d.Type, "type", "TX", "요청 유형(TX, DEPLOY, FABRIC_TX)")
 	draft.Flags().StringVar(&d.CodeHash, "code-hash", "", "DEPLOY 의 생성 바이트코드 keccak256")
 	c.AddCommand(draft, decideCmd(g, approval.Approve), decideCmd(g, approval.Reject), waitCmd(g))
 

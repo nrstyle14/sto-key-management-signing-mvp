@@ -19,6 +19,9 @@ NAMES=(
   hsm_so_pin_inst-b
   hsm_pin_audit
   hsm_so_pin_audit
+  hsm_pin_fabric-inst-a
+  hsm_so_pin_fabric-inst-a
+  fabric_ca_registrar_password
 )
 
 mkdir -p "$DIR"

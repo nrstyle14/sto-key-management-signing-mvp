@@ -106,6 +106,8 @@ type Service struct {
 	Dir      Directory
 	LedgerID string
 	GasLimit uint64 // 미서명 tx 에 넣을 가스 한도(사전 정책 검사에도 쓴다)
+	// FabricLedgerID 는 Fabric 원장 ID 다(D-26). 비우면 FABRIC_TX 기안을 거부한다.
+	FabricLedgerID string
 	// DeployGasLimit 은 배포 요청의 가스 한도다(사전 정책 검사용).
 	DeployGasLimit uint64
 	// KnownCode 는 업무 서버가 배포 tx 를 만들 수 있는 바이트코드인지다(배포 기안의 사전 검사).
@@ -177,8 +179,15 @@ func (s *Service) DraftWith(ctx context.Context, d DraftInput, extra func(ctx co
 	if d.ExpiresInSeconds < 60 || d.ExpiresInSeconds > 86400 {
 		return nil, apiErr(400, CodeBadRequest, "expires_in_seconds 는 60~86400 이다")
 	}
+	ledgerID := s.LedgerID
+	if d.Type == intent.TypeFabricTX {
+		if s.FabricLedgerID == "" {
+			return nil, apiErr(422, CodeFabricOff, "Fabric 원장이 꺼져 있다(make up-fabric)")
+		}
+		ledgerID = s.FabricLedgerID
+	}
 	in := &intent.Intent{
-		RequestID: ulid.Make().String(), Type: d.Type, LedgerID: s.LedgerID, InstitutionID: d.InstitutionID,
+		RequestID: ulid.Make().String(), Type: d.Type, LedgerID: ledgerID, InstitutionID: d.InstitutionID,
 		KeyPurpose: signer.Purpose(d.KeyPurpose), Contract: d.Contract, Function: d.Function, Args: d.Args, DrafterID: d.DrafterID,
 		CodeHash:  d.CodeHash,
 		ExpiresAt: s.now().Add(time.Duration(d.ExpiresInSeconds) * time.Second).Format(intent.TimeLayout),
@@ -221,8 +230,11 @@ func (s *Service) DraftWith(ctx context.Context, d DraftInput, extra func(ctx co
 		return nil, err
 	}
 	gas := s.GasLimit
-	if in.Type == intent.TypeDeploy {
+	switch in.Type {
+	case intent.TypeDeploy:
 		gas = s.DeployGasLimit
+	case intent.TypeFabricTX:
+		gas = 0 // Fabric 에는 가스가 없다
 	}
 	if err := policy.Evaluate(p, in, gas); err != nil {
 		var v *policy.Violation

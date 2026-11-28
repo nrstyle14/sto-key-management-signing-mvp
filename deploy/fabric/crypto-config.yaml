@@ -1,0 +1,15 @@
+# Fabric 노드·기관 관리자 신원(cryptogen, D-26 ⑥: 파일 기반, 한계). 생성물은 deploy/fabric/generated/(커밋 금지).
+OrdererOrgs:
+  - Name: Orderer
+    Domain: example.com
+    EnableNodeOUs: true
+    Specs:
+      - Hostname: orderer
+PeerOrgs:
+  - Name: InstA
+    Domain: insta.example.com
+    EnableNodeOUs: true
+    Template:
+      Count: 1
+    Users:
+      Count: 1

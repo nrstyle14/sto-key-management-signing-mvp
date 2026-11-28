@@ -29,3 +29,9 @@ recon:
   # 전체 종목 대사 주기(FR-7.2). 결과는 실행마다 남고, 같은 종목의 불일치 알람은 alarm_within 안에 다시 내지 않는다.
   interval: "1h"
   alarm_within: "24h"
+# Fabric 원장(T5.2, D-26). peer TLS CA 는 scripts/fabric-up.sh 가 채운다(없으면 Fabric 작업자를 끈다).
+fabric:
+  ledger_id: fabric-local
+  peer_address: peer0.insta.example.com:7051
+  server_name: peer0.insta.example.com
+  tls_ca_file: /etc/sto/fabric/peer-tls-ca.pem

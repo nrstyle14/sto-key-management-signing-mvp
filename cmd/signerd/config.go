@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/signer/mpc"
 
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/config"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/store"
@@ -21,6 +22,15 @@ type Config struct {
 	Freeze         FreezeConfig       `yaml:"freeze"`
 	KeyOps         KeyOpsConfig       `yaml:"key_ops"`
 	Audit          AuditConfig        `yaml:"audit"`
+	MPC            MPCConfig          `yaml:"mpc"`
+}
+
+// MPCConfig 는 MPC 서명기 노드(mpcd) 설정이다(D-25). nodes 가 비면 MPC 키 작업·서명을 거부한다.
+// 서명 서버는 자기 인증서(tls)로 노드에 mTLS 로 접속하고, 노드 인증서는 URL 의 호스트 이름으로 확인한다.
+type MPCConfig struct {
+	Nodes           []mpc.Node `yaml:"nodes"`
+	GenerateTimeout string     `yaml:"generate_timeout"` // 기본 3m
+	SignTimeout     string     `yaml:"sign_timeout"`     // 기본 30s
 }
 
 // AuditConfig 는 감사 체크포인트 설정이다(설계서 8절, FR-4.3).
@@ -63,7 +73,16 @@ type TokenConfig struct {
 type LedgerConfig struct {
 	ID      string `yaml:"id"`
 	ChainID uint64 `yaml:"chain_id"`
+	// Type 은 원장 종류다: besu(기본, secp256k1 키) 또는 fabric(P-256 신원 키, D-26).
+	Type string `yaml:"type"`
+	// MSPs 는 Fabric 원장의 기관 → MSP ID 다.
+	MSPs map[string]string `yaml:"msps"`
+	// CACerts 는 Fabric MSP 루트 CA 인증서 파일이다(발급 인증서·CRL 검증).
+	CACerts []string `yaml:"ca_certs"`
 }
+
+// IsFabric 은 Fabric 원장인지다.
+func (l LedgerConfig) IsFabric() bool { return l.Type == "fabric" }
 
 // SigningConfig 는 서명 공통 제한이다. 정책(T2.3)이 더 좁힐 수 있다.
 type SigningConfig struct {
@@ -119,8 +138,17 @@ func (c *Config) validate() error {
 		errs = append(errs, errors.New("ledgers 가 필요하다"))
 	}
 	for _, l := range c.Ledgers {
-		if l.ID == "" || l.ChainID == 0 {
-			errs = append(errs, errors.New("ledgers[].id, chain_id 가 필요하다"))
+		switch {
+		case l.ID == "":
+			errs = append(errs, errors.New("ledgers[].id 가 필요하다"))
+		case l.IsFabric():
+			if len(l.MSPs) == 0 || len(l.CACerts) == 0 {
+				errs = append(errs, fmt.Errorf("Fabric 원장 %s 에는 msps, ca_certs 가 필요하다", l.ID))
+			}
+		case l.Type != "" && l.Type != "besu":
+			errs = append(errs, fmt.Errorf("원장 %s 의 알 수 없는 종류 %q", l.ID, l.Type))
+		case l.ChainID == 0:
+			errs = append(errs, fmt.Errorf("원장 %s 에는 chain_id 가 필요하다", l.ID))
 		}
 	}
 	if c.Freeze.AdminGroup == "" || c.Freeze.ReleaseApprovals < 2 {

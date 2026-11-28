@@ -31,6 +31,12 @@ hsm:
       institution_id: inst-b
       pin_file: /run/secrets/hsm_pin_inst-b
       so_pin_file: /run/secrets/hsm_so_pin_inst-b
+    # Fabric 원장(T5.2, D-26): 기관 A 의 Fabric 신원 키(P-256) 토큰
+    - label: fabric-local.inst-a
+      ledger_id: fabric-local
+      institution_id: inst-a
+      pin_file: /run/secrets/hsm_pin_fabric-inst-a
+      so_pin_file: /run/secrets/hsm_so_pin_fabric-inst-a
     - label: audit
       ledger_id: global
       institution_id: audit
@@ -40,6 +46,11 @@ hsm:
 ledgers:
   - id: besu-local
     chain_id: 20261124
+  # Fabric 원장(T5.2, D-26). 루트 CA 파일이 없으면(make up-fabric 전) 이 원장만 끈다.
+  - id: fabric-local
+    type: fabric
+    msps: {inst-a: InstAMSP}
+    ca_certs: [/etc/sto/fabric-roots/insta-ca.pem]
 # 가스 한도 상한(5.3 의 7단계). 범위별 상한은 정책 gas_limit_cap 이 더 좁힌다. 배포 tx(약 150만) 때문에 300만.
 signing:
   max_gas_limit: 3000000
@@ -58,3 +69,12 @@ audit:
   checkpoint_file: /var/lib/sto/checkpoints/checkpoints.jsonl
   key_ledger: global
   key_institution: audit
+# MPC 서명기 노드(T5.1, D-25). 서명 서버 인증서로 mTLS 접속하고 노드 인증서는 호스트 이름(mpcd-N)으로 확인한다.
+# 서명 서버 기동은 노드에 의존하지 않는다(MPC 키는 서명 때 노드가 확인).
+mpc:
+  nodes:
+    - {id: mpcd-1, url: "https://mpcd-1:9543"}
+    - {id: mpcd-2, url: "https://mpcd-2:9543"}
+    - {id: mpcd-3, url: "https://mpcd-3:9543"}
+  generate_timeout: 3m
+  sign_timeout: 30s

@@ -137,11 +137,11 @@ done_step "② 거부 사례" "승인 부족·자기 승인·한도 초과·타 
 
 # ─────────────────────────────────────────────────────────────────────────
 step "③ 키 교체: 기관 A 발행 키"
-old="$("$STOCTL" key list | awk '$3=="inst-a" && $4=="ISSUE" && $5=="ACTIVE" {print $1, $6}')"
+old="$("$STOCTL" key list | awk '$2=="besu-local" && $3=="inst-a" && $4=="ISSUE" && $5=="ACTIVE" {print $1, $6}')"
 # 승인 화면(intent 상세)은 줄이고 단계별 결과만 보여 준다.
 "$STOCTL" key rotate --institution inst-a --purpose ISSUE --drafter sec-01 "${SEC[@]}" --reason "시연 정기 교체" |
   grep -Ev '^[[:space:]]*(요청 |원장 |컨트랙트 |함수 |인자 |기안자 |intent_hash |sec-0[0-9] (APPROVE|REJECT))' | sed 's/^/    /'
-new="$("$STOCTL" key list | awk '$3=="inst-a" && $4=="ISSUE" && $5=="ACTIVE" {print $1, $6}')"
+new="$("$STOCTL" key list | awk '$2=="besu-local" && $3=="inst-a" && $4=="ISSUE" && $5=="ACTIVE" {print $1, $6}')"
 [ "$old" != "$new" ] || fail "ACTIVE 키가 바뀌지 않았다"
 id="$(draft inst-a ISSUE "issue(address,uint256)" "$ADDR_A,50" apr-a-01)"
 approve "$id" apr-a-02 apr-a-03

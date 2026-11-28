@@ -55,6 +55,11 @@ const (
 	TypeWrapInstall Type = "WRAP_INSTALL" // 래핑 키를 (원장, 기관) 토큰에 추출 불가 객체로 넣는다
 	TypeBackup      Type = "BACKUP"       // 루트 키를 래핑해 백업 파일로 돌려준다
 	TypeRestore     Type = "RESTORE"      // 백업 파일을 토큰에 복원한다(레지스트리에 있고 HSM 객체가 없는 키)
+	// Fabric 신원(T5.2, D-26). CA 에는 stoctl 이 접속하고 서명 서버는 서명·기록만 한다.
+	TypeFabricCSR         Type = "FABRIC_CSR"          // P-256 키로 CSR 서명(subject = enrollment ID)
+	TypeFabricInstallCert Type = "FABRIC_INSTALL_CERT" // CA 가 발급한 인증서 등록(payload = 인증서 PEM)
+	TypeFabricToken       Type = "FABRIC_TOKEN"        // 재발급(reenroll) 인증 토큰 서명(payload = 요청 JSON)
+	TypeFabricRevoked     Type = "FABRIC_REVOKED"      // 폐기 기록(payload = CA 가 낸 CRL PEM)
 )
 
 // 거부 코드
@@ -103,14 +108,18 @@ type Request struct {
 	KeyID         string         `json:"key_id"`
 	RotatedFrom   string         `json:"rotated_from,omitempty"`
 	Successor     string         `json:"successor,omitempty"`
+	Backend       signer.Backend `json:"backend,omitempty"` // GENERATE: 비우면 HSM(D-25)
 	WrapKeyID     string         `json:"wrap_key_id,omitempty"`
 	SecretSHA256  string         `json:"secret_sha256,omitempty"`
 	BackupSHA256  string         `json:"backup_sha256,omitempty"`
+	Subject       string         `json:"subject,omitempty"`        // FABRIC_CSR: enrollment ID
+	PayloadSHA256 string         `json:"payload_sha256,omitempty"` // FABRIC_*: payload 약속값
 	Reason        string         `json:"reason"`
 	RequestedAt   string         `json:"requested_at"`
 	Approvals     []Signature    `json:"approvals"`
-	Secret        string         `json:"secret,omitempty"` // 16진수 32바이트. 서명 대상 아님(SecretSHA256 로 묶음)
-	Backup        *backup.File   `json:"backup,omitempty"` // 서명 대상 아님(BackupSHA256 로 묶음)
+	Secret        string         `json:"secret,omitempty"`  // 16진수 32바이트. 서명 대상 아님(SecretSHA256 로 묶음)
+	Backup        *backup.File   `json:"backup,omitempty"`  // 서명 대상 아님(BackupSHA256 로 묶음)
+	Payload       []byte         `json:"payload,omitempty"` // 서명 대상 아님(PayloadSHA256 로 묶음)
 }
 
 // Signature 는 보안관리자 서명 한 건이다.
@@ -128,6 +137,10 @@ type Result struct {
 	ObjectsRemaining *int `json:"objects_remaining,omitempty"`
 	// Backup 은 BACKUP 결과(래핑된 암호문, 공개 정보)다.
 	Backup *backup.File `json:"backup,omitempty"`
+	// Fabric 신원 작업 결과(D-26)
+	CSR    string `json:"csr,omitempty"`    // FABRIC_CSR: PEM
+	Token  string `json:"token,omitempty"`  // FABRIC_TOKEN: CA Authorization 값
+	Serial string `json:"serial,omitempty"` // FABRIC_INSTALL_CERT·FABRIC_REVOKED: 인증서 일련번호(16진수)
 }
 
 var idRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
@@ -135,8 +148,9 @@ var idRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 // Message 는 서명 대상 바이트다(승인자마다 같다).
 func (r Request) Message() []byte {
 	m := map[string]string{"op_id": r.OpID, "type": string(r.Type), "ledger_id": r.LedgerID, "institution_id": r.InstitutionID,
-		"purpose": string(r.Purpose), "key_id": r.KeyID, "rotated_from": r.RotatedFrom, "successor": r.Successor,
+		"purpose": string(r.Purpose), "key_id": r.KeyID, "rotated_from": r.RotatedFrom, "successor": r.Successor, "backend": string(r.Backend),
 		"wrap_key_id": r.WrapKeyID, "secret_sha256": r.SecretSHA256, "backup_sha256": r.BackupSHA256,
+		"subject": r.Subject, "payload_sha256": r.PayloadSHA256,
 		"reason": r.Reason, "requested_at": r.RequestedAt}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -183,6 +197,10 @@ type Executor struct {
 	AdminGroup string        // 보안관리자 그룹
 	Approvals  int           // 필요한 서로 다른 보안관리자 수(M)
 	MaxSkew    time.Duration // requested_at 허용 오차(기본 5분)
+	// CurveOf 는 원장의 키 곡선이다(Fabric 원장은 P-256, D-26). nil 이면 secp256k1.
+	CurveOf func(ledgerID string) signer.Curve
+	// Fabric 은 Fabric 신원 키 작업(D-26)이다. nil 이면 FABRIC_* 작업을 거부한다.
+	Fabric FabricConfig
 }
 
 func (e *Executor) validate(r Request, now time.Time) error {
@@ -203,6 +221,11 @@ func (e *Executor) validate(r Request, now time.Time) error {
 		if r.Successor != "" || (r.RotatedFrom != "" && !idRe.MatchString(r.RotatedFrom)) {
 			return fail(CodeInvalid, "생성 요청의 successor 는 비어 있어야 한다")
 		}
+		if r.Backend != "" {
+			if err := signer.CheckBackend(r.Backend, r.Purpose); err != nil {
+				return fail(CodeInvalid, "%v", err)
+			}
+		}
 	case TypeRetire:
 		if r.LedgerID != "" || r.InstitutionID != "" || r.Purpose != "" || r.RotatedFrom != "" || (r.Successor != "" && !idRe.MatchString(r.Successor)) {
 			return fail(CodeInvalid, "퇴역 요청에는 key_id 와 successor 만 쓴다")
@@ -222,6 +245,17 @@ func (e *Executor) validate(r Request, now time.Time) error {
 	case TypeRestore:
 		if !idRe.MatchString(r.WrapKeyID) || r.Backup == nil || len(r.BackupSHA256) != 64 {
 			return fail(CodeInvalid, "복원에는 wrap_key_id, backup, backup_sha256 이 필요하다")
+		}
+	case TypeFabricCSR:
+		if !idRe.MatchString(r.Subject) || len(r.Payload) != 0 || r.PayloadSHA256 != "" {
+			return fail(CodeInvalid, "CSR 서명에는 key_id 와 subject(enrollment ID)만 쓴다")
+		}
+	case TypeFabricInstallCert, TypeFabricToken, TypeFabricRevoked:
+		if len(r.PayloadSHA256) != 64 || len(r.Payload) == 0 || len(r.Payload) > 64<<10 {
+			return fail(CodeInvalid, "%s 에는 payload 와 payload_sha256 이 필요하다", r.Type)
+		}
+		if h := sha256.Sum256(r.Payload); hex.EncodeToString(h[:]) != r.PayloadSHA256 {
+			return fail(CodeInvalid, "payload 가 서명된 payload_sha256 과 다르다")
 		}
 	default:
 		return fail(CodeInvalid, "알 수 없는 작업 %q", r.Type)
@@ -291,6 +325,12 @@ func (e *Executor) execute(ctx context.Context, r Request, now time.Time) (*Resu
 		res, err = e.retire(ctx, r, admins)
 	case TypeDestroy:
 		res, err = e.destroy(ctx, r, admins)
+	case TypeFabricCSR, TypeFabricInstallCert, TypeFabricToken, TypeFabricRevoked:
+		if e.Wrap == nil || e.Fabric.MSP == nil {
+			err = fail(CodeInvalid, "이 서명 서버는 Fabric 신원 작업을 지원하지 않는다")
+			break
+		}
+		res, err = e.fabric(ctx, r, admins)
 	case TypeWrapInstall, TypeBackup, TypeRestore:
 		if e.Wrap == nil {
 			err = fail(CodeInvalid, "이 서명 서버는 백업·복구를 지원하지 않는다")
@@ -363,22 +403,44 @@ func (e *Executor) generate(ctx context.Context, r Request, admins []string) (*R
 			return nil, fail(CodeKeyState, "교체 대상 %s 는 같은 범위의 ACTIVE 키가 아니다", r.RotatedFrom)
 		}
 	}
-	// 이전 시도가 HSM 생성 뒤 등록 전에 멈췄으면 그 객체를 쓴다.
-	n, err := e.HSM.ObjectCount(ctx, tok.Label, r.KeyID)
-	if err != nil {
-		return nil, fail(CodeHSM, "HSM 조회: %v", err)
+	backend := r.Backend
+	if backend == "" {
+		backend = signer.BackendHSM
+	}
+	curve := signer.CurveSecp256k1
+	if e.CurveOf != nil {
+		curve = e.CurveOf(r.LedgerID)
+	}
+	if curve == signer.CurveP256 && backend != signer.BackendHSM {
+		return nil, fail(CodeInvalid, "Fabric 신원 키(P-256)는 HSM 만 쓴다(D-26)")
 	}
 	var pub signer.PublicKey
-	if n > 0 {
-		if pub, err = e.HSM.PublicKeyOf(ctx, tok.Label, r.KeyID); err != nil {
-			return nil, fail(CodeHSM, "HSM 에 남은 객체 확인: %v", err)
+	if backend == signer.BackendMPC {
+		// MPC 는 앞선 시도의 결과를 이어 쓰지 않는다. 노드가 확정 전 결과를 지우고 처음부터 한다(D-25).
+		if pub, err = e.HSM.Generate(ctx, signer.KeySpec{KeyID: r.KeyID, TokenLabel: tok.Label, Purpose: r.Purpose, Backend: backend}); err != nil {
+			return nil, fail(CodeHSM, "MPC 생성: %v", err)
 		}
-	} else if pub, err = e.HSM.Generate(ctx, signer.KeySpec{KeyID: r.KeyID, TokenLabel: tok.Label, Purpose: r.Purpose}); err != nil {
-		return nil, fail(CodeHSM, "HSM 생성: %v", err)
+	} else {
+		// 이전 시도가 HSM 생성 뒤 등록 전에 멈췄으면 그 객체를 쓴다.
+		n, err := e.HSM.ObjectCount(ctx, tok.Label, r.KeyID)
+		if err != nil {
+			return nil, fail(CodeHSM, "HSM 조회: %v", err)
+		}
+		if n > 0 {
+			if pub, err = e.HSM.PublicKeyOf(ctx, tok.Label, r.KeyID); err != nil {
+				return nil, fail(CodeHSM, "HSM 에 남은 객체 확인: %v", err)
+			}
+		} else if pub, err = e.HSM.Generate(ctx, signer.KeySpec{KeyID: r.KeyID, TokenLabel: tok.Label, Purpose: r.Purpose, Backend: backend, Curve: curve}); err != nil {
+			return nil, fail(CodeHSM, "HSM 생성: %v", err)
+		}
 	}
-	addr, err := pub.Address()
-	if err != nil {
-		return nil, err
+	addrHex := "" // P-256(Fabric 신원) 키는 주소가 없다
+	if curve == signer.CurveSecp256k1 {
+		addr, err := pub.Address()
+		if err != nil {
+			return nil, err
+		}
+		addrHex = addr.Hex()
 	}
 	tx, err := e.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -395,7 +457,7 @@ func (e *Executor) generate(ctx context.Context, r Request, admins []string) (*R
 		status = keyreg.StatusPending
 	}
 	if err := keyreg.RegisterKey(ctx, tx, keyreg.Key{KeyID: r.KeyID, TokenID: tok.TokenID, Purpose: r.Purpose, PublicKey: pub,
-		RotatedFrom: r.RotatedFrom, Status: status}); err != nil {
+		RotatedFrom: r.RotatedFrom, Status: status, Backend: backend, Curve: curve}); err != nil {
 		return nil, err
 	}
 	if err := done(ctx, tx, r.OpID); err != nil {
@@ -404,14 +466,14 @@ func (e *Executor) generate(ctx context.Context, r Request, admins []string) (*R
 	class, _ := signer.ClassOf(r.Purpose)
 	if _, err := audit.Append(ctx, tx, audit.Entry{Actor: "signerd", Action: "KEY_GENERATED", Subject: r.KeyID, Payload: map[string]any{
 		"request_id": r.OpID, "key_id": r.KeyID, "token": tok.Label, "purpose": string(r.Purpose), "class": string(class),
-		"address": addr.Hex(), "status": string(status), "approvers": admins, "reason": r.Reason, "target": r.RotatedFrom,
+		"address": addrHex, "status": string(status), "approvers": admins, "reason": r.Reason, "target": r.RotatedFrom, "backend": string(backend), "curve": string(curve),
 	}}); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return &Result{OpID: r.OpID, Type: r.Type, KeyID: r.KeyID, Status: string(status), Address: addr.Hex()}, nil
+	return &Result{OpID: r.OpID, Type: r.Type, KeyID: r.KeyID, Status: string(status), Address: addrHex}, nil
 }
 
 // retire 는 ACTIVE(또는 PENDING) 키를 RETIRED 로 바꾼다. successor 가 있으면 같은 트랜잭션에서 그 PENDING 키를 ACTIVE 로 바꾼다.

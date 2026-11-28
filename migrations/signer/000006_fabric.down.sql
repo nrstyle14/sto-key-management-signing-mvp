@@ -1,0 +1,3 @@
+DROP TABLE fabric_identities;
+ALTER TABLE signatures DROP COLUMN payload, DROP PRIMARY KEY, ADD PRIMARY KEY (request_id), DROP COLUMN kind;
+ALTER TABLE `keys` MODIFY COLUMN address CHAR(42) NOT NULL, DROP COLUMN curve;

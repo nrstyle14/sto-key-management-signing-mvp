@@ -24,14 +24,17 @@
 
 | 명령 | 내용 |
 |---|---|
-| `make build` | 세 실행 파일 빌드(`bin/`) |
+| `make build` | 실행 파일 빌드(`bin/`: apid, signerd, stoctl, mpcd) |
 | `make test` | 단위 테스트 |
 | `make gen` | 컨트랙트 컴파일(Foundry)과 Go 바인딩 생성(`internal/ledger/besu/sectoken`, 커밋 대상) |
 | `make test-contracts` | 컨트랙트 테스트(Foundry)와 커밋된 바인딩이 소스와 같은지 확인. 처음 받은 저장소는 `git submodule update --init` 먼저 |
 | `make lint` | gofmt, `go vet`(통합 태그 포함), import 경계 검사(`scripts/check-imports.sh`), 요건 대응표의 경로·시험 이름 확인(`scripts/check-traceability.sh`) |
-| `make up` / `make down` | 로컬 환경 기동·종료. `up`: 생성물(노드 키·비밀·인증서·승인자 키와 부트스트랩 파일) → Besu·MySQL → 마이그레이션 → HSM 토큰 초기화·부트스트랩(`scripts/init-signer.sh`) → signerd·apid |
+| `make up` / `make down` | 로컬 환경 기동·종료. `up`: 생성물(노드 키·비밀·인증서·승인자 키와 부트스트랩 파일) → Besu·MySQL → 마이그레이션 → HSM 토큰 초기화·부트스트랩(`scripts/init-signer.sh`) → mpcd-1~3·signerd·apid |
 | `make migrate` | DB 마이그레이션과 서버용 계정 테이블 단위 권한 부여 |
 | `make it` | 통합 테스트(`make up` 이후): 호스트 DB·서버·종단 시험 → SoftHSM2 컨테이너 시험(`scripts/it-hsm.sh`) |
+| `make up-fabric` / `make it-fabric` | Fabric 네트워크 기동(`make up` 뒤, `scripts/fabric-up.sh`: 신원·채널·체인코드 → signerd·apid 재기동) / Fabric 종단 시험(`-tags 'integration fabric'`). Fabric 범위 토큰·정책은 부트스트랩에 있어 기존 환경은 볼륨을 지우고 다시 만들어야 한다(D-26) |
+| `bin/stoctl fabric enroll\|reenroll\|revoke\|list` | Fabric 신원 발급(HSM P-256 키 CSR → CA enroll → 인증서 등록), 재발급(새 키), 폐기(CA revoke → 채널 설정 갱신 → 기록), 조회. 키 작업은 보안관리자 2명 서명. 키는 `key generate --ledger fabric-local` |
+| `scripts/fabric-crl-update.sh <CRL>` | CRL 을 채널 설정 InstAMSP `revocation_list` 에 넣는다(기관 관리자 서명, `stoctl fabric revoke`가 부른다) |
 | `make demo` | 전체 시연(`make up && make migrate` 뒤, `scripts/demo.sh`): 정상 흐름 → 거부 5종 → 키 교체 → 도난 대응 → 감사 검증·변조 탐지 → 대사 불일치 탐지. 기대 결과가 아니면 멈춘다 |
 | `go run ./scripts/demo-attack insufficient-approvals\|calldata-swap\|audit-tamper\|holding-skew` | 시연용 공격 흉내(업무 서버 인증서로 서명 서버 직접 호출, 감사로그 일회용 복사본 변조, 연계장부 수량 변경) |
 | `scripts/check-besu.sh [--fault-test]` | Besu 블록 생성·검증 노드·가스비 0 tx·노드 장애 점검 |
@@ -41,7 +44,8 @@
 | `bin/stoctl request wait <id> [--status]` | 요청이 기대 상태(기본 CONFIRMED)가 될 때까지 대기 |
 | `bin/stoctl security deploy\|grant-role\|set-agent\|list\|roles` | 종목 배포(DEPLOY)·역할 부여/회수·기관 대응 요청 기안, 종목 조회, 원장의 역할 확인 |
 | `bin/stoctl registry events --contract` | 보존된 원장 이벤트 조회 |
-| `bin/stoctl key list\|generate\|retire\|destroy\|rotate` | 키 레지스트리 조회, 키 작업(보안관리자 2명 서명), 키 교체(`--until`, `--resume`) |
+| `bin/stoctl key list\|generate\|retire\|destroy\|rotate` | 키 레지스트리 조회(맨 끝 열이 서명기 HSM·MPC), 키 작업(보안관리자 2명 서명), 키 교체(`--until`, `--resume`). `--backend mpc`로 운영 키를 MPC 키로 만들거나 교체 |
+| `scripts/gen-mpc.sh` | MPC 노드(mpcd-1~3) 신원 키·조각 암호화 키(`deploy/secrets/mpc_node_*`)와 노드 설정(`deploy/mpcd/generated/`) 생성. `make up`이 실행 |
 | `bin/stoctl key ceremony\|backup\|restore` | 래핑 키 의식(Shamir 조각 `deploy/ceremony/`), 루트 키 백업(`deploy/backups/`)·복원 |
 | `bin/stoctl account register\|add-registration\|show\|list\|holdings` | 연계장부 계좌 등록(무작위 주소, 원장 등록 요청 함께 기안)·조회, 보유 수량 |
 | `bin/stoctl policy list\|whitelist-add` | ACTIVE 정책 조회, 화이트리스트 주소 추가(보안관리자 2명 서명, `--account`로 연계장부 계좌 지정) |
@@ -54,8 +58,8 @@
 | `scripts/incident-key-compromise.sh [기관/용도]` | 키 도난 대응(동결 → 역할 회수 → 유통 정지 → 새 키 → 재개 → 폐기), 단계별 시간·감사 seq |
 | `go run ./scripts/probe-besu-resubmit` | Besu 재제출 응답·가스 사용량 실측 |
 
-생성물과 비밀(커밋 금지): `deploy/besu/generated/`(노드 키), `deploy/secrets/`(DB 비밀번호, HSM PIN, 승인자 키 암호), `deploy/approvers/`(암호화된 승인자 키), `deploy/signerd/generated/`(부트스트랩 파일), `deploy/certs/`(CA·서버 인증서와 키), `deploy/ceremony/`(래핑 키 조각), `deploy/backups/`(루트 키 백업), `scripts/probe-hsm/out/`, `contracts/out/`·`contracts/cache/`.
+생성물과 비밀(커밋 금지): `deploy/besu/generated/`(노드 키), `deploy/secrets/`(DB 비밀번호, HSM PIN, 승인자 키 암호), `deploy/approvers/`(암호화된 승인자 키), `deploy/signerd/generated/`(부트스트랩 파일), `deploy/mpcd/generated/`(MPC 노드 설정), `deploy/fabric/generated/`(Fabric 노드·관리자 신원, 채널 블록, 체인코드 패키지, registrar 자격, CRL), `deploy/secrets/mpc_node_*`(MPC 노드 신원 키·조각 암호화 키), `deploy/certs/`(CA·서버 인증서와 키), `deploy/ceremony/`(래핑 키 조각), `deploy/backups/`(루트 키 백업), `scripts/probe-hsm/out/`, `contracts/out/`·`contracts/cache/`.
 
-빌드 태그: `integration`(통합 테스트).
+빌드 태그: `integration`(통합 테스트), `fabric`(Fabric 종단 시험, `integration`과 함께).
 
 명령이 아직 없으면 T0.1에서 만든다. 명령을 추가하거나 바꾸면 이 표를 고쳐.

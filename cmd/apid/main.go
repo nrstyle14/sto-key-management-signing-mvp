@@ -122,6 +122,9 @@ func serve(ctx context.Context, log *slog.Logger, cfgPath string) error {
 			return linked.ApplyEvent(ctx, tx, cfg.Ledger.ID, ev)
 		}}).Run(wctx, interval, logw)
 	go a.pushAuditHead(wctx, interval, log)
+	if fl := a.startFabric(wctx, interval, log, logw); fl != nil {
+		defer fl.Close()
+	}
 	a.recon = &recon.Runner{DB: db, LedgerID: cfg.Ledger.ID, Chain: led, Alarms: a.alarms}
 	if cfg.Recon.AlarmWithin != "" {
 		if a.recon.AlarmWithin, err = time.ParseDuration(cfg.Recon.AlarmWithin); err != nil || a.recon.AlarmWithin <= 0 {

@@ -35,6 +35,7 @@ func main() {
 		accountCmd(g),
 		policyCmd(g),
 		reconCmd(g),
+		fabricCmd(g),
 	)
 	if err := root.ExecuteContext(context.Background()); err != nil {
 		fmt.Fprintln(os.Stderr, "오류:", err)

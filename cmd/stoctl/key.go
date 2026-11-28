@@ -144,13 +144,14 @@ func keyCmd(g *globals) *cobra.Command {
 				return err
 			}
 			for _, k := range keys {
-				fmt.Printf("%-44s %-10s %-9s %-15s %-9s %s\n", k.KeyID, k.LedgerID, k.InstitutionID, k.Purpose, k.Status, k.Address)
+				// 열 순서(키, 원장, 기관, 용도, 상태, 주소)는 스크립트가 쓴다. 서명기 종류는 맨 뒤에 붙인다(D-25).
+				fmt.Printf("%-44s %-10s %-9s %-15s %-9s %s %s\n", k.KeyID, k.LedgerID, k.InstitutionID, k.Purpose, k.Status, k.Address, k.Backend)
 			}
 			return nil
 		},
 	}
 
-	var ledger, inst, purpose, keyID, rotatedFrom, successor, reason string
+	var ledger, inst, purpose, keyID, rotatedFrom, successor, reason, backend string
 	var gen approverSet
 	generate := &cobra.Command{
 		Use: "generate", Short: "새 키를 만든다(같은 범위에 ACTIVE 키가 있거나 --rotated-from 이면 PENDING)",
@@ -160,6 +161,7 @@ func keyCmd(g *globals) *cobra.Command {
 			}
 			r := keyops.New(keyops.TypeGenerate, time.Now())
 			r.LedgerID, r.InstitutionID, r.Purpose, r.KeyID, r.RotatedFrom, r.Reason = ledger, inst, signer.Purpose(purpose), keyID, rotatedFrom, reason
+			r.Backend = signer.Backend(strings.ToUpper(backend))
 			res, err := g.keyOp(cmd.Context(), r, &gen)
 			if err != nil {
 				return err
@@ -173,6 +175,7 @@ func keyCmd(g *globals) *cobra.Command {
 	generate.Flags().StringVar(&keyID, "key-id", "", "새 키 ID(비우면 자동)")
 	generate.Flags().StringVar(&rotatedFrom, "rotated-from", "", "교체 대상 키 ID")
 	generate.Flags().StringVar(&reason, "reason", "", "사유")
+	generate.Flags().StringVar(&backend, "backend", "", "서명기(hsm, mpc. 비우면 hsm, mpc 는 운영 키만)")
 	gen.flags(generate)
 
 	var ret approverSet
@@ -229,7 +232,7 @@ func keyCmd(g *globals) *cobra.Command {
 // 온체인 단계는 모두 승인이 붙은 TX 요청이고(플랫폼 CONTRACT_ADMIN 키), 키 작업은 보안관리자 M명 서명이다.
 // --until 로 단계 사이에서 멈출 수 있다(나머지는 --resume 으로 이어서, 또는 key retire 로 마무리).
 func rotateCmd(g *globals) *cobra.Command {
-	var ledger, inst, purpose, drafter, until, resume, reason string
+	var ledger, inst, purpose, drafter, until, resume, reason, backend string
 	var only []string
 	var appr approverSet
 	var timeout time.Duration
@@ -274,6 +277,7 @@ func rotateCmd(g *globals) *cobra.Command {
 			if start < 1 {
 				r := keyops.New(keyops.TypeGenerate, time.Now())
 				r.LedgerID, r.InstitutionID, r.Purpose, r.KeyID, r.RotatedFrom, r.Reason = ledger, inst, p, newKeyID(inst, p), old.KeyID, reason
+				r.Backend = signer.Backend(strings.ToUpper(backend))
 				res, err := g.keyOp(ctx, r, &appr)
 				if err != nil {
 					return fmt.Errorf("새 키 생성: %w", err)
@@ -386,6 +390,7 @@ func rotateCmd(g *globals) *cobra.Command {
 	c.Flags().StringVar(&until, "until", "", "이 단계 뒤에 멈춘다(generate, grant, revoke)")
 	c.Flags().StringVar(&resume, "resume", "", "이어서 진행: <새 키 ID>@<마친 단계>")
 	c.Flags().StringVar(&reason, "reason", "키 교체", "사유")
+	c.Flags().StringVar(&backend, "backend", "", "새 키의 서명기(hsm, mpc. 비우면 hsm)")
 	c.Flags().DurationVar(&timeout, "timeout", 120*time.Second, "요청마다 확정 대기")
 	c.Flags().StringArrayVar(&only, "security", nil, "이 종목만(여러 번, 비우면 모든 종목). 빠진 종목에는 이전 키 역할이 남는다")
 	appr.flags(c)

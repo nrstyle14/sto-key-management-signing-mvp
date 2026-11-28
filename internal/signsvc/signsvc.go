@@ -96,7 +96,9 @@ type Service struct {
 	Chains  map[string]uint64 // ledger_id → chainId (서명 서버 설정)
 	MaxGas  uint64
 	Callers []string // 이 처리를 요청할 수 있는 호출자 CN(1단계)
-	Now     func() time.Time
+	// FabricMSP 는 Fabric 원장 범위 (원장, 기관)의 MSP ID 다(D-26). nil 이면 Fabric 서명을 거부한다.
+	FabricMSP func(ledgerID, institutionID string) (string, bool)
+	Now       func() time.Time
 	// OnAuditError 는 거부 감사 기록이 실패했을 때 부른다(로그용).
 	OnAuditError func(error)
 }
@@ -221,38 +223,8 @@ func (s *Service) signTx(ctx context.Context, caller string, req Request) (*Resp
 	if txErr == nil {
 		gas = tx.Gas()
 	}
-	pol, err := policy.Lookup(ctx, s.DB, in.LedgerID, in.InstitutionID, in.KeyPurpose)
-	if err != nil {
-		return nil, policyReject(5, err)
-	}
-	if err := policy.Evaluate(pol, in, gas); err != nil {
-		return nil, policyReject(5, err)
-	}
-
-	// 6. 승인: 항목 하나라도 잘못되면 요청 전체를 거부한다(중복 승인자, 미등록·비활성, 서명 불일치,
-	//    기안자 본인, 다른 기관, 정책 그룹 밖, 반려 포함). 서로 다른 유효 승인자가 M명 이상이어야 한다.
-	refs := make([]policy.ApproverRef, 0, len(req.Approvals))
-	seen := map[string]bool{}
-	for _, a := range req.Approvals {
-		if a.ApproverID == "" || !a.Decision.Valid() {
-			return nil, reject(6, CodeApprovalInvalid, "승인 항목 형식 오류(approver_id %q, decision %q)", a.ApproverID, a.Decision)
-		}
-		if seen[a.ApproverID] {
-			return nil, reject(6, policy.CodeApprovalDuplicate, "승인자 %s 중복", a.ApproverID)
-		}
-		seen[a.ApproverID] = true
-		ap, err := approval.VerifyOne(ctx, s.DB, a, h)
-		if err != nil {
-			var ae *approval.Error
-			if errors.As(err, &ae) {
-				return nil, reject(6, ae.Code, "%s", ae.Error())
-			}
-			return nil, err
-		}
-		refs = append(refs, policy.ApproverRef{ApproverID: ap.ApproverID, InstitutionID: ap.InstitutionID, Groups: ap.Groups, Decision: string(a.Decision)})
-	}
-	if err := policy.CheckApprovals(pol, in.DrafterID, in.InstitutionID, refs); err != nil {
-		return nil, policyReject(6, err)
+	if err := s.checkPolicyAndApprovals(ctx, in, h, req.Approvals, gas); err != nil {
+		return nil, err
 	}
 
 	// 7. 미서명 tx 해석과 intent 대조
@@ -269,6 +241,44 @@ func (s *Service) signTx(ctx context.Context, caller string, req Request) (*Resp
 
 	// 8·9. request_id 예약 → HSM 서명 → 결과 저장을 한 DB 트랜잭션으로 한다.
 	return s.signAndStore(ctx, caller, in, h, unsignedHash, key, tx)
+}
+
+// checkPolicyAndApprovals 는 5단계(정책)와 6단계(승인)다. EVM 서명과 Fabric 서명(D-26)이 같이 쓴다.
+func (s *Service) checkPolicyAndApprovals(ctx context.Context, in *intent.Intent, h [32]byte, approvals []approval.Approval, gas uint64) error {
+	pol, err := policy.Lookup(ctx, s.DB, in.LedgerID, in.InstitutionID, in.KeyPurpose)
+	if err != nil {
+		return policyReject(5, err)
+	}
+	if err := policy.Evaluate(pol, in, gas); err != nil {
+		return policyReject(5, err)
+	}
+
+	// 6. 승인: 항목 하나라도 잘못되면 요청 전체를 거부한다(중복 승인자, 미등록·비활성, 서명 불일치,
+	//    기안자 본인, 다른 기관, 정책 그룹 밖, 반려 포함). 서로 다른 유효 승인자가 M명 이상이어야 한다.
+	refs := make([]policy.ApproverRef, 0, len(approvals))
+	seen := map[string]bool{}
+	for _, a := range approvals {
+		if a.ApproverID == "" || !a.Decision.Valid() {
+			return reject(6, CodeApprovalInvalid, "승인 항목 형식 오류(approver_id %q, decision %q)", a.ApproverID, a.Decision)
+		}
+		if seen[a.ApproverID] {
+			return reject(6, policy.CodeApprovalDuplicate, "승인자 %s 중복", a.ApproverID)
+		}
+		seen[a.ApproverID] = true
+		ap, err := approval.VerifyOne(ctx, s.DB, a, h)
+		if err != nil {
+			var ae *approval.Error
+			if errors.As(err, &ae) {
+				return reject(6, ae.Code, "%s", ae.Error())
+			}
+			return err
+		}
+		refs = append(refs, policy.ApproverRef{ApproverID: ap.ApproverID, InstitutionID: ap.InstitutionID, Groups: ap.Groups, Decision: string(a.Decision)})
+	}
+	if err := policy.CheckApprovals(pol, in.DrafterID, in.InstitutionID, refs); err != nil {
+		return policyReject(6, err)
+	}
+	return nil
 }
 
 func (s *Service) signAndStore(ctx context.Context, caller string, in *intent.Intent, intentHash, unsignedHash [32]byte, key *keyreg.Key, unsigned *types.Transaction) (*Response, error) {
@@ -307,7 +317,7 @@ func (s *Service) signAndStore(ctx context.Context, caller string, in *intent.In
 		return nil, reject(8, CodeSigMismatch, "%v", err)
 	}
 	txHash := signed.Hash()
-	if _, err := dbtx.ExecContext(ctx, `UPDATE signatures SET tx_hash = ?, signed_tx = ?, signed_at = CURRENT_TIMESTAMP(6) WHERE request_id = ?`,
+	if _, err := dbtx.ExecContext(ctx, `UPDATE signatures SET tx_hash = ?, signed_tx = ?, signed_at = CURRENT_TIMESTAMP(6) WHERE request_id = ? AND kind = 'EVM_TX'`,
 		txHash[:], raw, in.RequestID); err != nil {
 		return nil, reject(9, CodeStoreFailed, "저장: %v", err)
 	}
@@ -331,7 +341,7 @@ func (s *Service) signAndStore(ctx context.Context, caller string, in *intent.In
 func (s *Service) existing(ctx context.Context, requestID string, unsignedHash [32]byte) (*Response, error) {
 	var keyID, addr string
 	var storedHash, txHash, signedTx []byte
-	err := s.DB.QueryRowContext(ctx, "SELECT s.key_id, k.address, s.unsigned_tx_hash, s.tx_hash, s.signed_tx FROM signatures s JOIN `keys` k ON k.key_id = s.key_id WHERE s.request_id = ?",
+	err := s.DB.QueryRowContext(ctx, "SELECT s.key_id, k.address, s.unsigned_tx_hash, s.tx_hash, s.signed_tx FROM signatures s JOIN `keys` k ON k.key_id = s.key_id WHERE s.request_id = ? AND s.kind = 'EVM_TX'",
 		requestID).Scan(&keyID, &addr, &storedHash, &txHash, &signedTx)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

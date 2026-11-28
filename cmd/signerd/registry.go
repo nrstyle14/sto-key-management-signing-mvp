@@ -13,6 +13,7 @@ import (
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/config"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/hsm"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/keyreg"
+	"github.com/da-infra/sto-key-management-signing-mvp/internal/signer"
 	signerhsm "github.com/da-infra/sto-key-management-signing-mvp/internal/signer/hsm"
 	"github.com/da-infra/sto-key-management-signing-mvp/internal/store"
 )
@@ -94,7 +95,13 @@ func (a *app) checkRegistry(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	mpcKeys := 0
 	for _, k := range keys {
+		if k.Backend == signer.BackendMPC {
+			// MPC 키는 노드에 묻지 않는다(노드 장애로 동결·감사·HSM 키 서명이 막히지 않게, D-25). 서명 때 노드가 확인한다.
+			mpcKeys++
+			continue
+		}
 		pub, err := a.hsm.PublicKeyOf(ctx, k.TokenLabel, k.KeyID)
 		if err != nil {
 			return fmt.Errorf("키 %s: %w", k.KeyID, err)
@@ -103,6 +110,9 @@ func (a *app) checkRegistry(ctx context.Context) error {
 			return fmt.Errorf("키 %s: HSM 공개키가 레지스트리와 다르다", k.KeyID)
 		}
 	}
-	a.log.Info("레지스트리 키 대조", "keys", len(keys))
+	a.log.Info("레지스트리 키 대조", "keys", len(keys)-mpcKeys)
+	if mpcKeys > 0 {
+		a.log.Warn("MPC 키는 기동 점검에서 노드에 묻지 않았다", "mpc_keys", mpcKeys, "nodes", len(a.cfg.MPC.Nodes))
+	}
 	return nil
 }

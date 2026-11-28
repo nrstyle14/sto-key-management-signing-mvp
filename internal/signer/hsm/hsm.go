@@ -65,7 +65,12 @@ func (s *Signer) Generate(ctx context.Context, spec signer.KeySpec) (signer.Publ
 	if err != nil {
 		return nil, err
 	}
-	pub, err := t.GenerateSecp256k1(ctx, spec.KeyID, hsm.KeyAttrs{Extractable: class.Extractable()})
+	attrs := hsm.KeyAttrs{Extractable: class.Extractable()}
+	if spec.Curve == signer.CurveP256 {
+		// Fabric 신원 키(D-26): 래핑 백업 없음
+		attrs = hsm.KeyAttrs{ECParams: hsm.OIDP256}
+	}
+	pub, err := t.GenerateSecp256k1(ctx, spec.KeyID, attrs)
 	if err != nil {
 		return nil, err
 	}

@@ -27,8 +27,14 @@ func TestSignerdHealthzOverMTLS(t *testing.T) {
 		t.Fatalf("signerd /healthz: %d %v", code, body)
 	}
 	toks, _ := body["hsm_tokens"].(map[string]any)
-	if len(toks) != 4 {
-		t.Fatalf("HSM 토큰 4개 기대: %v", toks)
+	// 설정된 토큰(Besu 기관 3, 감사 1, Fabric 기관 A 1, D-26)이 모두 있고 세션이 정상이어야 한다.
+	for _, label := range []string{"besu-local.platform", "besu-local.inst-a", "besu-local.inst-b", "audit", "fabric-local.inst-a"} {
+		if toks[label] != "ok" {
+			t.Fatalf("HSM 토큰 %s 상태 %v (전체 %v)", label, toks[label], toks)
+		}
+	}
+	if len(toks) != 5 {
+		t.Fatalf("HSM 토큰 5개 기대: %v", toks)
 	}
 }
 

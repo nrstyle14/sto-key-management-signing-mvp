@@ -5,11 +5,11 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 PKG := github.com/da-infra/sto-key-management-signing-mvp
 LDFLAGS := -X $(PKG)/internal/version.Version=$(VERSION) -X $(PKG)/internal/version.Commit=$(COMMIT)
-CMDS := apid signerd stoctl
+CMDS := apid signerd stoctl mpcd
 
-.PHONY: build test lint gen test-contracts up down migrate it demo
+.PHONY: build test lint gen test-contracts up down migrate it demo up-fabric it-fabric
 
-build: ## 세 실행 파일 빌드
+build: ## 실행 파일 빌드(apid, signerd, stoctl, mpcd)
 	@mkdir -p bin
 	@for c in $(CMDS); do \
 		echo "build $$c"; \
@@ -23,6 +23,7 @@ lint: ## 정적 검사, import 경계 검사, 요건 대응표의 경로·시험
 	@out="$$(gofmt -l cmd internal scripts test)"; if [ -n "$$out" ]; then echo "gofmt 필요:"; echo "$$out"; exit 1; fi
 	$(GO) vet ./...
 	$(GO) vet -tags integration ./...
+	$(GO) vet -tags 'integration fabric' ./test/
 	./scripts/check-imports.sh
 	./scripts/check-traceability.sh
 
@@ -37,18 +38,26 @@ COMPOSE := docker compose -f deploy/docker-compose.yml
 
 INFRA := mysql besu-node1 besu-node2 besu-node3 besu-node4
 
-up: ## 로컬 환경 기동: 생성물·비밀·승인자 키 → 인프라 → 마이그레이션 → 토큰·부트스트랩 → signerd, apid
+up: ## 로컬 환경 기동: 생성물·비밀·승인자 키·MPC 노드 설정 → 인프라 → 마이그레이션 → 토큰·부트스트랩 → mpcd-1~3, signerd, apid
 	./scripts/gen-besu-network.sh
 	./scripts/gen-secrets.sh
 	./scripts/gen-certs.sh
+	./scripts/gen-mpc.sh
 	./scripts/gen-approvers.sh
+	@mkdir -p deploy/fabric/generated/roots deploy/fabric/generated/public
 	$(COMPOSE) up -d --wait $(INFRA)
 	$(MAKE) --no-print-directory migrate
 	./scripts/init-signer.sh
-	$(COMPOSE) up -d --wait --build signerd apid
+	$(COMPOSE) up -d --wait --build mpcd-1 mpcd-2 mpcd-3 signerd apid
 
-down: ## 로컬 환경 종료(데이터 볼륨은 남긴다)
-	$(COMPOSE) down
+down: ## 로컬 환경 종료(데이터 볼륨은 남긴다, Fabric 프로필 포함)
+	$(COMPOSE) --profile fabric down
+
+up-fabric: ## Fabric 네트워크 기동(make up 이후, T5.2): 신원·채널·체인코드 → signerd·apid 재기동
+	./scripts/fabric-up.sh
+
+it-fabric: ## Fabric 통합 시험(make up-fabric 이후, T5.2)
+	$(GO) test -count=1 -p 1 -timeout 30m -tags 'integration fabric' -run Fabric ./test/
 
 migrate: ## DB 마이그레이션과 서버용 계정 권한 부여
 	$(GO) run ./scripts/dbmigrate
@@ -58,7 +67,7 @@ migrate: ## DB 마이그레이션과 서버용 계정 권한 부여
 HOST_IT_PKGS := ./test/... ./internal/audit/... ./internal/approval/... ./internal/keyreg/... ./internal/signsvc/... ./internal/workflow/... ./internal/freeze/... ./internal/alarm/... ./internal/ledger/... ./internal/registry/... ./internal/keyops/... ./internal/policychange/... ./internal/linked/... ./internal/recon/...
 
 it: ## 통합 테스트(make up 이후): 호스트 DB·서버·종단 시험 → SoftHSM2 컨테이너 시험
-	$(GO) test -count=1 -p 1 -tags integration $(HOST_IT_PKGS)
+	$(GO) test -count=1 -p 1 -timeout 45m -tags integration $(HOST_IT_PKGS)
 	./scripts/it-hsm.sh
 
 demo: build ## 전체 시연(make up && make migrate 이후): 정상 흐름 → 거부 5종 → 키 교체 → 도난 대응 → 감사 → 대사

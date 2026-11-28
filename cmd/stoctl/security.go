@@ -34,6 +34,7 @@ type keyInfo struct {
 	Purpose       string `json:"purpose"`
 	Address       string `json:"address"`
 	Status        string `json:"status"`
+	Backend       string `json:"backend"`
 }
 
 func (g *globals) keys(ctx context.Context) ([]keyInfo, error) {

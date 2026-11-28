@@ -21,6 +21,9 @@ import (
 // OIDSecp256k1 은 secp256k1 곡선 OID(1.3.132.0.10)의 DER 인코딩이다(CKA_EC_PARAMS).
 var OIDSecp256k1 = []byte{0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x0A}
 
+// OIDP256 은 P-256(prime256v1, 1.2.840.10045.3.1.7)의 DER 인코딩이다. Fabric 신원 키(D-26).
+var OIDP256 = []byte{0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07}
+
 // 오류
 var (
 	ErrKeyNotFound   = errors.New("hsm: 키 객체가 없다")
@@ -221,13 +224,19 @@ func (t *Token) Ping(ctx context.Context) error {
 type KeyAttrs struct {
 	// Extractable 이 true 면 래핑으로만 내보낼 수 있는 루트 키다(CKA_SENSITIVE 는 항상 true).
 	Extractable bool
+	// ECParams 는 곡선(CKA_EC_PARAMS)이다. 비우면 secp256k1.
+	ECParams []byte
 }
 
-// GenerateSecp256k1 은 secp256k1 키 쌍을 토큰 객체로 만들고 65바이트 비압축 공개키를 돌려준다.
+// GenerateSecp256k1 은 EC 키 쌍(기본 secp256k1, attrs.ECParams 로 P-256)을 토큰 객체로 만들고 65바이트 비압축 공개키를 돌려준다.
 // 같은 라벨(keyID)의 객체가 이미 있으면 거부한다.
 func (t *Token) GenerateSecp256k1(ctx context.Context, keyID string, attrs KeyAttrs) ([]byte, error) {
 	if keyID == "" {
 		return nil, errors.New("hsm: keyID 가 비었다")
+	}
+	params := attrs.ECParams
+	if params == nil {
+		params = OIDSecp256k1
 	}
 	var pub []byte
 	err := t.withSession(ctx, func(sh pkcs11.SessionHandle) error {
@@ -245,7 +254,7 @@ func (t *Token) GenerateSecp256k1(ctx context.Context, keyID string, attrs KeyAt
 			pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, pkcs11.CKK_EC),
 			pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
 			pkcs11.NewAttribute(pkcs11.CKA_VERIFY, true),
-			pkcs11.NewAttribute(pkcs11.CKA_EC_PARAMS, OIDSecp256k1),
+			pkcs11.NewAttribute(pkcs11.CKA_EC_PARAMS, params),
 			pkcs11.NewAttribute(pkcs11.CKA_LABEL, keyID),
 			pkcs11.NewAttribute(pkcs11.CKA_ID, []byte(keyID)),
 		}

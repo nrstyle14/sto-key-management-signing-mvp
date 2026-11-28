@@ -55,7 +55,11 @@ type Body struct {
 	GasLimitCap        uint64   `json:"gas_limit_cap" yaml:"gas_limit_cap"`
 }
 
-var fnRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*\([a-z0-9,]*\)$`)
+var (
+	fnRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*\([a-z0-9,]*\)$`)
+	// fabricFnRe 는 Fabric 체인코드 함수 이름이다(D-26, intent FABRIC_TX 의 function 과 같은 형식).
+	fabricFnRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
+)
 
 // Validate 는 본문 값을 확인한다.
 func (b *Body) Validate() error {
@@ -65,7 +69,7 @@ func (b *Body) Validate() error {
 	}
 	seen := map[string]bool{}
 	for _, f := range b.AllowedFunctions {
-		if !fnRe.MatchString(f) || seen[f] {
+		if !(fnRe.MatchString(f) || fabricFnRe.MatchString(f)) || seen[f] {
 			errs = append(errs, fmt.Errorf("함수 서명 %q 가 정규 형식이 아니거나 중복이다", f))
 		}
 		seen[f] = true

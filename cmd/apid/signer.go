@@ -182,3 +182,82 @@ func (c *signerClient) PushAPIHead(ctx context.Context, seq uint64, hash string)
 	}
 	return nil
 }
+
+// SignFabric 은 Fabric 원문 서명을 요청한다(설계서 10.5, D-26). 거부(4xx)는 *signsvc.Rejection, 그 밖은 일시 오류다.
+func (c *signerClient) SignFabric(ctx context.Context, sreq signsvc.FabricRequest) (*signsvc.FabricResponse, error) {
+	body, err := json.Marshal(sreq)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/v1/sign/fabric", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: 서명 서버 호출: %v", workflow.ErrTransient, err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		var res signsvc.FabricResponse
+		if err := json.Unmarshal(raw, &res); err != nil {
+			return nil, err
+		}
+		return &res, nil
+	case resp.StatusCode >= 400 && resp.StatusCode < 500:
+		var rj signsvc.Rejection
+		if json.Unmarshal(raw, &rj) == nil && rj.Code != "" && rj.Step > 0 {
+			return nil, &rj
+		}
+		var e transport.ErrorBody
+		_ = json.Unmarshal(raw, &e)
+		return nil, &signsvc.Rejection{Step: 0, Code: e.Code, Msg: fmt.Sprintf("HTTP %d %s", resp.StatusCode, e.Message)}
+	default:
+		return nil, fmt.Errorf("%w: 서명 서버 HTTP %d", workflow.ErrTransient, resp.StatusCode)
+	}
+}
+
+// FabricIdentity 는 (원장, 기관, 용도)의 ACTIVE Fabric 신원 키 인증서와 MSP 다(캐시하지 않는다: 교체·폐기 직후 반영).
+// 폐기된 신원도 돌려준다: 사용 가능 여부는 서명 서버가 4단계에서 판단해 거부한다(요청이 APPROVED 에 머물지 않게).
+func (c *signerClient) FabricIdentity(ctx context.Context, ledgerID, institutionID, purpose string) ([]byte, string, error) {
+	keys, err := c.Keys(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	keyID := ""
+	for _, k := range keys {
+		if k.LedgerID == ledgerID && k.InstitutionID == institutionID && k.Purpose == purpose && k.Status == "ACTIVE" {
+			keyID = k.KeyID
+		}
+	}
+	if keyID == "" {
+		return nil, "", fmt.Errorf("(%s, %s, %s) 의 ACTIVE 키가 없다", ledgerID, institutionID, purpose)
+	}
+	raw, err := c.fetch(ctx, "/v1/fabric/identities")
+	if err != nil {
+		return nil, "", err
+	}
+	var v struct {
+		Identities []struct {
+			KeyID   string `json:"key_id"`
+			MSPID   string `json:"msp_id"`
+			CertPEM string `json:"cert_pem"`
+			Status  string `json:"status"`
+		} `json:"identities"`
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, "", err
+	}
+	for _, i := range v.Identities {
+		if i.KeyID == keyID {
+			return []byte(i.CertPEM), i.MSPID, nil
+		}
+	}
+	return nil, "", fmt.Errorf("키 %s 에 Fabric 신원이 없다", keyID)
+}

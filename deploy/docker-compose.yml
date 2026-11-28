@@ -105,6 +105,7 @@ services:
       - hsm_pin_inst-a
       - hsm_pin_inst-b
       - hsm_pin_audit
+      - hsm_pin_fabric-inst-a
     volumes:
       - ./signerd/signerd.yaml:/etc/sto/signerd.yaml:ro
       - ./certs/ca.crt:/etc/sto/certs/ca.crt:ro
@@ -113,6 +114,8 @@ services:
       - signerd-tokens:/var/lib/softhsm/tokens
       # 감사 체크포인트 파일(DB 와 다른 위치). 서명 서버만 마운트한다.
       - signerd-checkpoints:/var/lib/sto/checkpoints
+      # Fabric MSP 루트 CA(공개 인증서, scripts/fabric-up.sh 가 채운다. 비어 있으면 Fabric 원장을 끈다, D-26)
+      - ./fabric/generated/roots:/etc/sto/fabric-roots:ro
     networks: [db, signer]
     # 개발용으로 호스트 루프백에만 바인딩한다(통합 시험, stoctl 비상 동결).
     ports:
@@ -122,6 +125,187 @@ services:
       interval: 3s
       timeout: 5s
       retries: 40
+
+  # MPC 키 조각 노드(T5.1, D-25). 서명 서버만 mTLS 로 호출한다. 노드끼리는 직접 연결하지 않는다.
+  mpcd-1:
+    image: sto-kms/mpcd:dev
+    build:
+      context: ..
+      dockerfile: deploy/mpcd/Dockerfile
+    command: ["serve", "--config", "/etc/sto/mpcd.yaml"]
+    restart: unless-stopped
+    secrets:
+      - mpc_node_1_identity
+      - mpc_node_1_store_key
+    volumes:
+      - ./mpcd/generated/mpcd-1.yaml:/etc/sto/mpcd.yaml:ro
+      - ./certs/ca.crt:/etc/sto/certs/ca.crt:ro
+      - ./certs/mpcd-1.crt:/etc/sto/certs/mpcd-1.crt:ro
+      - ./certs/mpcd-1.key:/etc/sto/certs/mpcd-1.key:ro
+      - mpcd-1-data:/var/lib/sto/mpc
+    networks: [signer]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/mpcd", "healthcheck", "--config", "/etc/sto/mpcd.yaml"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  # MPC 키 조각 노드(T5.1, D-25). 서명 서버만 mTLS 로 호출한다. 노드끼리는 직접 연결하지 않는다.
+  mpcd-2:
+    image: sto-kms/mpcd:dev
+    build:
+      context: ..
+      dockerfile: deploy/mpcd/Dockerfile
+    command: ["serve", "--config", "/etc/sto/mpcd.yaml"]
+    restart: unless-stopped
+    secrets:
+      - mpc_node_2_identity
+      - mpc_node_2_store_key
+    volumes:
+      - ./mpcd/generated/mpcd-2.yaml:/etc/sto/mpcd.yaml:ro
+      - ./certs/ca.crt:/etc/sto/certs/ca.crt:ro
+      - ./certs/mpcd-2.crt:/etc/sto/certs/mpcd-2.crt:ro
+      - ./certs/mpcd-2.key:/etc/sto/certs/mpcd-2.key:ro
+      - mpcd-2-data:/var/lib/sto/mpc
+    networks: [signer]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/mpcd", "healthcheck", "--config", "/etc/sto/mpcd.yaml"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  # MPC 키 조각 노드(T5.1, D-25). 서명 서버만 mTLS 로 호출한다. 노드끼리는 직접 연결하지 않는다.
+  mpcd-3:
+    image: sto-kms/mpcd:dev
+    build:
+      context: ..
+      dockerfile: deploy/mpcd/Dockerfile
+    command: ["serve", "--config", "/etc/sto/mpcd.yaml"]
+    restart: unless-stopped
+    secrets:
+      - mpc_node_3_identity
+      - mpc_node_3_store_key
+    volumes:
+      - ./mpcd/generated/mpcd-3.yaml:/etc/sto/mpcd.yaml:ro
+      - ./certs/ca.crt:/etc/sto/certs/ca.crt:ro
+      - ./certs/mpcd-3.crt:/etc/sto/certs/mpcd-3.crt:ro
+      - ./certs/mpcd-3.key:/etc/sto/certs/mpcd-3.key:ro
+      - mpcd-3-data:/var/lib/sto/mpc
+    networks: [signer]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/mpcd", "healthcheck", "--config", "/etc/sto/mpcd.yaml"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  # ── Fabric(T5.2, D-26). 프로필 fabric 에서만 뜬다: make up-fabric(scripts/fabric-up.sh). Besu 환경과 독립이다.
+  fabric-orderer:
+    profiles: [fabric]
+    image: hyperledger/fabric-orderer:2.5.16
+    hostname: orderer.example.com
+    environment:
+      - ORDERER_GENERAL_LISTENADDRESS=0.0.0.0
+      - ORDERER_GENERAL_LISTENPORT=7050
+      - ORDERER_GENERAL_LOCALMSPID=OrdererMSP
+      - ORDERER_GENERAL_LOCALMSPDIR=/var/hyperledger/orderer/msp
+      - ORDERER_GENERAL_TLS_ENABLED=true
+      - ORDERER_GENERAL_TLS_PRIVATEKEY=/var/hyperledger/orderer/tls/server.key
+      - ORDERER_GENERAL_TLS_CERTIFICATE=/var/hyperledger/orderer/tls/server.crt
+      - ORDERER_GENERAL_TLS_ROOTCAS=[/var/hyperledger/orderer/tls/ca.crt]
+      - ORDERER_GENERAL_CLUSTER_CLIENTCERTIFICATE=/var/hyperledger/orderer/tls/server.crt
+      - ORDERER_GENERAL_CLUSTER_CLIENTPRIVATEKEY=/var/hyperledger/orderer/tls/server.key
+      - ORDERER_GENERAL_CLUSTER_ROOTCAS=[/var/hyperledger/orderer/tls/ca.crt]
+      - ORDERER_GENERAL_BOOTSTRAPMETHOD=none
+      - ORDERER_CHANNELPARTICIPATION_ENABLED=true
+      - ORDERER_ADMIN_TLS_ENABLED=true
+      - ORDERER_ADMIN_TLS_CERTIFICATE=/var/hyperledger/orderer/tls/server.crt
+      - ORDERER_ADMIN_TLS_PRIVATEKEY=/var/hyperledger/orderer/tls/server.key
+      - ORDERER_ADMIN_TLS_ROOTCAS=[/var/hyperledger/orderer/tls/ca.crt]
+      - ORDERER_ADMIN_TLS_CLIENTROOTCAS=[/var/hyperledger/orderer/tls/ca.crt]
+      - ORDERER_ADMIN_LISTENADDRESS=0.0.0.0:7053
+      - ORDERER_FILELEDGER_LOCATION=/var/hyperledger/production/orderer
+    volumes:
+      - ./fabric/generated/crypto-config/ordererOrganizations/example.com/orderers/orderer.example.com/msp:/var/hyperledger/orderer/msp:ro
+      - ./fabric/generated/crypto-config/ordererOrganizations/example.com/orderers/orderer.example.com/tls:/var/hyperledger/orderer/tls:ro
+      - fabric-orderer-data:/var/hyperledger/production/orderer
+    networks:
+      fabric:
+        aliases: [orderer.example.com]
+
+  fabric-peer:
+    profiles: [fabric]
+    image: hyperledger/fabric-peer:2.5.16
+    hostname: peer0.insta.example.com
+    environment:
+      # Docker 소켓을 쓰지 않는다(체인코드는 CCaaS, 실측 2026-11-28).
+      - CORE_VM_ENDPOINT=
+      - CORE_PEER_ID=peer0.insta.example.com
+      - CORE_PEER_ADDRESS=peer0.insta.example.com:7051
+      - CORE_PEER_LISTENADDRESS=0.0.0.0:7051
+      - CORE_PEER_CHAINCODEADDRESS=peer0.insta.example.com:7052
+      - CORE_PEER_CHAINCODELISTENADDRESS=0.0.0.0:7052
+      - CORE_PEER_GOSSIP_EXTERNALENDPOINT=peer0.insta.example.com:7051
+      - CORE_PEER_LOCALMSPID=InstAMSP
+      - CORE_PEER_MSPCONFIGPATH=/etc/hyperledger/fabric/msp
+      - CORE_PEER_TLS_ENABLED=true
+      - CORE_PEER_TLS_CERT_FILE=/etc/hyperledger/fabric/tls/server.crt
+      - CORE_PEER_TLS_KEY_FILE=/etc/hyperledger/fabric/tls/server.key
+      - CORE_PEER_TLS_ROOTCERT_FILE=/etc/hyperledger/fabric/tls/ca.crt
+      - CORE_LEDGER_STATE_STATEDATABASE=goleveldb
+      - CORE_PEER_FILESYSTEMPATH=/var/hyperledger/production
+    volumes:
+      - ./fabric/generated/crypto-config/peerOrganizations/insta.example.com/peers/peer0.insta.example.com/msp:/etc/hyperledger/fabric/msp:ro
+      - ./fabric/generated/crypto-config/peerOrganizations/insta.example.com/peers/peer0.insta.example.com/tls:/etc/hyperledger/fabric/tls:ro
+      - fabric-peer-data:/var/hyperledger/production
+    networks:
+      fabric:
+        aliases: [peer0.insta.example.com]
+    ports:
+      - "127.0.0.1:7051:7051"
+
+  # InstAMSP 루트 CA 키로 뜨는 Fabric CA. registrar 비밀번호는 Docker secret(D-26 ⑥: 파일 기반).
+  fabric-ca:
+    profiles: [fabric]
+    image: hyperledger/fabric-ca:1.5.22
+    entrypoint: ["sh", "/w/ca-start.sh"]
+    environment:
+      - FABRIC_CA_HOME=/var/hyperledger/fabric-ca-server
+      - FABRIC_CA_SERVER_CA_NAME=ca-insta
+      - FABRIC_CA_SERVER_CRL_EXPIRY=24h
+    secrets:
+      - fabric_ca_registrar_password
+    volumes:
+      - ./fabric/ca-start.sh:/w/ca-start.sh:ro
+      - ./fabric/generated/crypto-config/peerOrganizations/insta.example.com/ca:/ca:ro
+      - fabric-ca-data:/var/hyperledger/fabric-ca-server
+    networks: [fabric]
+    # stoctl 이 신원 발급·재발급·폐기에 쓴다(호스트 루프백만).
+    ports:
+      - "127.0.0.1:7054:7054"
+
+  # 채널 참가·체인코드 설치·채널 설정 갱신용 도구(scripts/fabric-up.sh, scripts/fabric-crl-update.sh).
+  fabric-tools:
+    profiles: [fabric]
+    image: hyperledger/fabric-tools:2.5.16
+    entrypoint: ["sleep", "infinity"]
+    working_dir: /w
+    volumes:
+      - ./fabric:/w
+    networks: [fabric]
+
+  fabric-cc:
+    profiles: [fabric]
+    image: sto-kms/sectoken-cc:dev
+    build:
+      context: ..
+      dockerfile: deploy/fabric/cc.Dockerfile
+    hostname: sectoken-cc
+    volumes:
+      # 공개 파일(패키지 ID)만
+      - ./fabric/generated/public:/fabric:ro
+    networks:
+      fabric:
+        aliases: [sectoken-cc]
 
   # 토큰 초기화와 부트스트랩을 한 번씩 실행하는 일회성 서비스. SO PIN 은 여기에만 준다.
   # signerd 가 멈춘 상태에서만 실행한다(scripts/init-signer.sh). 같은 토큰 볼륨을 동시에 쓰지 않는다.
@@ -138,6 +322,8 @@ services:
       - hsm_so_pin_inst-a
       - hsm_so_pin_inst-b
       - hsm_so_pin_audit
+      - hsm_pin_fabric-inst-a
+      - hsm_so_pin_fabric-inst-a
     volumes:
       - ./signerd/signerd.yaml:/etc/sto/signerd.yaml:ro
       - ./signerd/generated/bootstrap.yaml:/etc/sto/bootstrap.yaml:ro
@@ -159,7 +345,10 @@ services:
       - ./certs/ca.crt:/etc/sto/certs/ca.crt:ro
       - ./certs/apid.crt:/etc/sto/certs/apid.crt:ro
       - ./certs/apid.key:/etc/sto/certs/apid.key:ro
-    networks: [db, signer, besu]
+      # Fabric 공개 파일만(peer TLS CA). 노드·관리자·CA·registrar 개인키가 있는 generated/ 는 마운트하지 않는다
+      # (업무 서버는 키를 갖지 않는다). scripts/fabric-up.sh 가 채우고, 비어 있으면 Fabric 작업자를 끈다.
+      - ./fabric/generated/public:/etc/sto/fabric:ro
+    networks: [db, signer, besu, fabric]
     ports:
       - "127.0.0.1:9443:9443"
       - "127.0.0.1:9080:9080" # 읽기 전용 웹(D-9)
@@ -170,6 +359,24 @@ services:
       retries: 40
 
 secrets:
+  fabric_ca_registrar_password:
+    file: ./secrets/fabric_ca_registrar_password
+  hsm_pin_fabric-inst-a:
+    file: ./secrets/hsm_pin_fabric-inst-a
+  hsm_so_pin_fabric-inst-a:
+    file: ./secrets/hsm_so_pin_fabric-inst-a
+  mpc_node_1_identity:
+    file: ./secrets/mpc_node_1_identity
+  mpc_node_1_store_key:
+    file: ./secrets/mpc_node_1_store_key
+  mpc_node_2_identity:
+    file: ./secrets/mpc_node_2_identity
+  mpc_node_2_store_key:
+    file: ./secrets/mpc_node_2_store_key
+  mpc_node_3_identity:
+    file: ./secrets/mpc_node_3_identity
+  mpc_node_3_store_key:
+    file: ./secrets/mpc_node_3_store_key
   mysql_root_password:
     file: ./secrets/mysql_root_password
   api_migrator_password:
@@ -198,6 +405,7 @@ secrets:
     file: ./secrets/hsm_so_pin_audit
 
 networks:
+  fabric: {}
   db: {}
   signer: {}
   besu:
@@ -207,6 +415,12 @@ networks:
 
 volumes:
   mysql-data:
+  fabric-orderer-data:
+  fabric-peer-data:
+  fabric-ca-data:
+  mpcd-1-data:
+  mpcd-2-data:
+  mpcd-3-data:
   signerd-tokens:
   signerd-checkpoints:
   besu-node1-data:

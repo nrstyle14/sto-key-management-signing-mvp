@@ -70,6 +70,8 @@ type Key struct {
 	InstitutionID string
 	Purpose       signer.Purpose
 	Class         signer.Class
+	Backend       signer.Backend // 비우면 HSM(D-25)
+	Curve         signer.Curve   // 비우면 secp256k1. P-256 키(Fabric 신원)는 Address 가 0 이다(D-26)
 	PublicKey     signer.PublicKey
 	Address       common.Address
 	Status        Status
@@ -117,28 +119,51 @@ func RegisterKey(ctx context.Context, db store.DBTX, k Key) error {
 	if k.Class != class {
 		return fmt.Errorf("%w: %s 는 %s 여야 한다", ErrClassMismatch, k.Purpose, class)
 	}
-	addr, err := k.PublicKey.Address()
-	if err != nil {
-		return err
+	if k.Curve == "" {
+		k.Curve = signer.CurveSecp256k1
 	}
-	if k.Address != (common.Address{}) && k.Address != addr {
-		return ErrAddressMismatch
+	var addrArg any // P-256 키는 주소 없음(NULL)
+	switch k.Curve {
+	case signer.CurveSecp256k1:
+		a, err := k.PublicKey.Address()
+		if err != nil {
+			return err
+		}
+		if k.Address != (common.Address{}) && k.Address != a {
+			return ErrAddressMismatch
+		}
+		addrArg = a.Hex()
+	case signer.CurveP256:
+		if k.Backend != signer.BackendHSM && k.Backend != "" {
+			return errors.New("keyreg: P-256 키는 HSM 만 쓴다")
+		}
+		if len(k.PublicKey) != 65 || k.PublicKey[0] != 4 {
+			return errors.New("keyreg: P-256 공개키는 비압축 65바이트다")
+		}
+	default:
+		return fmt.Errorf("keyreg: 알 수 없는 곡선 %q", k.Curve)
+	}
+	if k.Backend == "" {
+		k.Backend = signer.BackendHSM
+	}
+	if err := signer.CheckBackend(k.Backend, k.Purpose); err != nil {
+		return err
 	}
 	var rotated any
 	if k.RotatedFrom != "" {
 		rotated = k.RotatedFrom
 	}
-	_, err = db.ExecContext(ctx, `INSERT INTO `+"`keys`"+` (key_id, token_id, purpose, class, public_key, address, status, rotated_from)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		k.KeyID, k.TokenID, string(k.Purpose), string(k.Class), []byte(k.PublicKey), addr.Hex(), string(k.Status), rotated)
+	_, err = db.ExecContext(ctx, `INSERT INTO `+"`keys`"+` (key_id, token_id, purpose, class, backend, curve, public_key, address, status, rotated_from)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		k.KeyID, k.TokenID, string(k.Purpose), string(k.Class), string(k.Backend), string(k.Curve), []byte(k.PublicKey), addrArg, string(k.Status), rotated)
 	if err != nil {
 		return fmt.Errorf("keyreg: 키 등록(%s): %w", k.KeyID, err)
 	}
 	return nil
 }
 
-const keySelect = `SELECT k.key_id, k.token_id, t.label, t.ledger_id, t.institution_id, k.purpose, k.class,
-	k.public_key, k.address, k.status, COALESCE(k.rotated_from, ''), k.created_at, k.retired_at, k.destroyed_at
+const keySelect = `SELECT k.key_id, k.token_id, t.label, t.ledger_id, t.institution_id, k.purpose, k.class, k.backend, k.curve,
+	k.public_key, COALESCE(k.address, ''), k.status, COALESCE(k.rotated_from, ''), k.created_at, k.retired_at, k.destroyed_at
 	FROM ` + "`keys`" + ` k JOIN hsm_tokens t ON t.token_id = k.token_id `
 
 func scanKeys(rows *sql.Rows) ([]Key, error) {
@@ -146,10 +171,10 @@ func scanKeys(rows *sql.Rows) ([]Key, error) {
 	var out []Key
 	for rows.Next() {
 		var k Key
-		var purpose, class, addr, status string
+		var purpose, class, backend, curve, addr, status string
 		var pub []byte
 		var retired, destroyed sql.NullTime
-		if err := rows.Scan(&k.KeyID, &k.TokenID, &k.TokenLabel, &k.LedgerID, &k.InstitutionID, &purpose, &class,
+		if err := rows.Scan(&k.KeyID, &k.TokenID, &k.TokenLabel, &k.LedgerID, &k.InstitutionID, &purpose, &class, &backend, &curve,
 			&pub, &addr, &status, &k.RotatedFrom, &k.CreatedAt, &retired, &destroyed); err != nil {
 			return nil, err
 		}
@@ -161,12 +186,14 @@ func scanKeys(rows *sql.Rows) ([]Key, error) {
 			t := destroyed.Time.UTC()
 			k.DestroyedAt = &t
 		}
-		k.Purpose, k.Class, k.Status = signer.Purpose(purpose), signer.Class(class), Status(status)
+		k.Purpose, k.Class, k.Status, k.Backend, k.Curve = signer.Purpose(purpose), signer.Class(class), Status(status), signer.Backend(backend), signer.Curve(curve)
 		k.PublicKey = signer.PublicKey(pub)
-		if !common.IsHexAddress(addr) {
-			return nil, fmt.Errorf("keyreg: 저장된 주소 형식 오류(%s)", k.KeyID)
+		if addr != "" {
+			if !common.IsHexAddress(addr) {
+				return nil, fmt.Errorf("keyreg: 저장된 주소 형식 오류(%s)", k.KeyID)
+			}
+			k.Address = common.HexToAddress(addr)
 		}
-		k.Address = common.HexToAddress(addr)
 		out = append(out, k)
 	}
 	return out, rows.Err()

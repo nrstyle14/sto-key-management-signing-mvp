@@ -15,7 +15,7 @@ import (
 // 서버가 기대하는 마이그레이션 버전. 마이그레이션을 추가하면 같이 올린다.
 const (
 	APISchemaVersion    = 6
-	SignerSchemaVersion = 4
+	SignerSchemaVersion = 6
 )
 
 // DBConfig 는 MySQL 접속 설정이다. 비밀번호는 파일로만 받는다.

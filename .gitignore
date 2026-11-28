@@ -20,6 +20,10 @@ approver-keys/
 # 승인자 키 파일(암호화돼 있어도 커밋 금지)과 환경별로 생성되는 부트스트랩 파일
 /deploy/approvers/
 /deploy/signerd/generated/
+# MPC 노드 설정(신원 공개키는 비밀이 아니지만 환경마다 생성된다)
+/deploy/mpcd/generated/
+# Fabric 노드·관리자 신원(cryptogen), 채널 블록, 체인코드 패키지, registrar 자격(T5.2)
+/deploy/fabric/generated/
 .env
 .env.*
 

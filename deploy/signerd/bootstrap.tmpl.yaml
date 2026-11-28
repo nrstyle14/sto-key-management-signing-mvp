@@ -5,6 +5,7 @@ tokens:
   - label: besu-local.platform
   - label: besu-local.inst-a
   - label: besu-local.inst-b
+  - label: fabric-local.inst-a
   - label: audit
 keys:
   - key_id: key-platform-contract-admin-1
@@ -68,3 +69,9 @@ policies:
     institution_id: platform
     key_purpose: EMERGENCY
     body: {allowed_functions: ["setCirculation(bool)", "pause()", "unpause()"], recipient_whitelist: false, required_approvals: 2, approver_group: platform-security-admins, gas_limit_cap: 500000}
+  # Fabric 원장(T5.2, D-26): 기관 A 의 체인코드 호출. 키(P-256)는 부트스트랩이 아니라 key generate --ledger fabric-local 로 만든다.
+  - policy_id: pol-fabric-inst-a-transfer
+    ledger_id: fabric-local
+    institution_id: inst-a
+    key_purpose: TRANSFER
+    body: {allowed_functions: ["RegisterAccount"], recipient_whitelist: false, required_approvals: 2, approver_group: inst-a-approvers, gas_limit_cap: 1}
